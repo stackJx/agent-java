@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: agentcore-sample
+  threads:
+    virtual:
+      enabled: true          # Agent 运行、SSE 都跑在虚拟线程上
+
+server:
+  port: 8080
+
+agentcore:
+  model: ${AGENTCORE_MODEL:deepseek:deepseek-v4-pro}   # 或 anthropic:claude-opus-5-5 / qwen:qwen-max / mock
+  providers:
+    deepseek:
+      api-key-env: DEEPSEEK_API_KEY
+    anthropic:
+      effort: high
+  agent:
+    name: 小智客服
+    instructions: |
+      你是电商平台的客服助手，回答使用简体中文，语气礼貌简洁。
+      涉及订单的问题先用 get_order 查询，不要编造订单信息；退款前向用户确认原因和金额。
+    project-instructions: false
+  tools: [todo_write]          # 客服场景不开放 bash / 文件读写等内置工具；@AgentTool 业务工具始终可用
+  subagent-max-depth: 0
+  permissions:
+    mode: default              # refund 不是只读工具 → 需要用户在前端确认（SSE 推送 approval_required）
+  sessions:
+    dir: ./data/sessions
+  memory:
+    enabled: false
+  web:
+    base-path: /api/agent
+    approval-timeout: 5m

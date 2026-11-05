@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.agentcore</groupId>
+    <artifactId>agentcore-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>agentcore-interfaces</artifactId>
+  <description>接口层：命令行 REPL、HTTP/SSE 服务</description>
+  <dependencies>
+    <dependency><groupId>com.agentcore</groupId><artifactId>agentcore-application</artifactId></dependency>
+    <dependency><groupId>com.agentcore</groupId><artifactId>agentcore-infrastructure</artifactId></dependency>
+  </dependencies>
+
+</project>
