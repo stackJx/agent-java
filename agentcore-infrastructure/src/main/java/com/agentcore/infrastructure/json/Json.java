@@ -63,23 +63,12 @@ public final class Json {
         return MAPPER.valueToTree(value);
     }
 
-    /** JSON 节点 → Map/List/String/Number/Boolean/null。 */
-    public static Object toJava(JsonNode node) {
-        if (node == null || node.isNull() || node.isMissingNode()) {
-            return null;
-        }
-        return MAPPER.convertValue(node, Object.class);
-    }
 
     public static Map<String, Object> toMap(JsonNode node) {
         if (node == null || !node.isObject()) {
             return Map.of();
         }
         return MAPPER.convertValue(node, MAP);
-    }
-
-    public static Map<String, Object> parseObject(String text) {
-        return toMap(read(text));
     }
 
     @SuppressWarnings("unchecked")

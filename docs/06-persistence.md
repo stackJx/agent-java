@@ -179,7 +179,7 @@ agentcore:
       memory-scope: default
 ```
 
-独立部署版的 jar 不带 JDBC 驱动，用环境变量 `AGENTCORE_CLASSPATH` 加进来（Spring Boot 的 `loader.path` 机制）：
+独立部署版的 jar 不带 JDBC 驱动，用环境变量 `AGENTCORE_CLASSPATH` 加到 classpath 上（多个用冒号分隔，整个目录写成 `/opt/drivers/*`）：
 
 ```bash
 AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \

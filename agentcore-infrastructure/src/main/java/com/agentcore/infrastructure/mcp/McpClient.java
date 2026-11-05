@@ -26,9 +26,7 @@ public final class McpClient implements AutoCloseable {
     private final AtomicLong ids = new AtomicLong();
     private final Map<Long, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
     private volatile boolean closed;
-    private volatile boolean toolsChanged;
     private String instructions = "";
-    private JsonNode serverInfo = Json.object();
 
     public McpClient(String name, McpTransport transport, Duration timeout) {
         this.name = name;
@@ -60,21 +58,12 @@ public final class McpClient implements AutoCloseable {
         return instructions;
     }
 
-    public JsonNode serverInfo() {
-        return serverInfo;
-    }
-
-    public boolean toolsChanged() {
-        return toolsChanged;
-    }
-
     public void start() throws Exception {
         transport.start(this::onMessage, this::onClose);
         ObjectNode params = Json.object().put("protocolVersion", PROTOCOL_VERSION);
         params.putObject("capabilities");
         params.putObject("clientInfo").put("name", "agentcore").put("version", "0.1.0");
         JsonNode result = request("initialize", params);
-        serverInfo = result.path("serverInfo");
         instructions = result.path("instructions").asText("");
         transport.protocolVersion(result.path("protocolVersion").asText(PROTOCOL_VERSION));
         notify("notifications/initialized", null);
@@ -141,9 +130,8 @@ public final class McpClient implements AutoCloseable {
                     // 服务端已断开
                 }
             });
-        } else if ("notifications/tools/list_changed".equals(method)) {
-            toolsChanged = true;
         }
+        // 其他通知（例如 notifications/tools/list_changed）：工具列表在启动时确定，暂不支持运行中热更新，忽略
     }
 
     private void onClose() {

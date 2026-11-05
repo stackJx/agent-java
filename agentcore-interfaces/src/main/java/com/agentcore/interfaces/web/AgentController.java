@@ -8,6 +8,8 @@ import com.agentcore.domain.conversation.Conversation;
 import com.agentcore.domain.conversation.ConversationSummary;
 import com.agentcore.domain.conversation.ImageBlock;
 import com.agentcore.domain.conversation.TextBlock;
+import com.agentcore.domain.permission.Approval;
+import com.agentcore.domain.permission.Decision;
 import com.agentcore.domain.permission.PermissionRequest;
 import com.agentcore.infrastructure.json.DomainCodec;
 import com.agentcore.infrastructure.json.EventCodec;
@@ -36,7 +38,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 /**
  * 对外的 HTTP + SSE 接口（Spring MVC），路径前缀 {@code agentcore.web.base-path}（默认 /api/agent）。
  * 独立部署版（{@code bin/agentcore serve}）和嵌入 Spring Boot 应用时用的都是它。
- * JSON 由 agentcore 自己序列化（{@link WebJson}、{@code DomainCodec}），不依赖应用的 Jackson 版本。
+ * JSON 由 agentcore 自己序列化（{@code DomainCodec}、{@code EventCodec}），不依赖应用的 Jackson 版本。
  *
  * <pre>
  * GET  {base}/health                           健康检查（配置了 token 也不需要鉴权）
@@ -122,7 +124,7 @@ public class AgentController {
         SseEmitter emitter = new SseEmitter(sseTimeoutMillis);
         // 运行期间，这个会话的审批请求都推给当前这条 SSE 连接
         if (approver != null) {
-            approver.attach(id, (PermissionRequest pr) -> send(emitter, id, "approval_required", WebJson.approvalRequired(pr)));
+            approver.attach(id, (PermissionRequest pr) -> send(emitter, id, "approval_required", approvalRequired(pr)));
         }
         AgentService.RunHandle handle = service.chatAsync(id, input,
                 (AgentEvent e) -> send(emitter, id, e.type(), EventCodec.encode(e)));
@@ -157,14 +159,14 @@ public class AgentController {
     public ResponseEntity<String> pendingApprovals(@RequestParam(required = false) String conversationId) {
         ArrayNode arr = Json.array();
         if (approver != null) {
-            approver.pending(conversationId).forEach(r -> arr.add(WebJson.approvalRequired(r).put("conversation_id", r.conversationId())));
+            approver.pending(conversationId).forEach(r -> arr.add(approvalRequired(r).put("conversation_id", r.conversationId())));
         }
         return json(HttpStatus.OK, Json.object().set("approvals", arr));
     }
 
     @PostMapping("/approvals/{requestId}")
     public ResponseEntity<String> approve(@PathVariable String requestId, @RequestBody(required = false) String body) {
-        boolean ok = approver != null && approver.resolve(requestId, WebJson.approval(parse(body)));
+        boolean ok = approver != null && approver.resolve(requestId, approval(parse(body)));
         return json(ok ? HttpStatus.OK : HttpStatus.NOT_FOUND, Json.object().put("resolved", ok));
     }
 
@@ -189,6 +191,23 @@ public class AgentController {
         } catch (IOException | IllegalStateException e) {
             service.cancel(conversationId); // 客户端已断开：取消任务
         }
+    }
+
+    /** 审批请求 → SSE 事件 approval_required 的数据（也用于等待中审批的列表）。 */
+    static ObjectNode approvalRequired(PermissionRequest req) {
+        ObjectNode data = Json.object().put("request_id", req.requestId()).put("tool", req.tool())
+                .put("summary", req.summary()).put("subject", req.subject()).put("reason", req.reason());
+        data.set("arguments", Json.tree(req.arguments()));
+        return data;
+    }
+
+    /** {"decision": "allow|always|deny", "message": "..."} → Approval；无法识别的一律当作拒绝。 */
+    static Approval approval(JsonNode body) {
+        return switch (body.path("decision").asText("deny")) {
+            case "allow" -> Approval.allow();
+            case "always" -> Approval.always();
+            default -> new Approval(Decision.DENY, false, body.path("message").asText(""));
+        };
     }
 
     private static JsonNode parse(String body) {

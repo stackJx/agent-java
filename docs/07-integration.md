@@ -39,7 +39,17 @@ bin/agentcore init                               # 生成带注释的 agentcore.
 常用选项：`-m <provider:model>`、`--yolo`（全部放行）、`--readonly`、`--no-session`、`--cwd <目录>`、`--config <文件>`。
 任何 Spring 配置项都能直接从命令行覆盖：`--agentcore.web.token=xxx`、`--spring.datasource.url=...`、`--debug`（排查启动问题）。
 
-`bin/agentcore` 是一个 Spring Boot 应用：`chat`、`run`、`sessions` 不启动 Web 服务，`serve` 才启动。启动比纯 Java 程序慢一些（要先建 Spring 容器），日志统一写到 stderr。
+`bin/agentcore` 是一个 Spring Boot 应用：`chat`、`run`、`sessions` 不启动 Web 服务，`serve` 才启动。日志统一写到 stderr。
+
+启动速度：启动脚本不直接运行打包的 jar，而是运行它解压后的目录，并用 JVM 的类数据共享（CDS）缓存已经加载好的类：
+
+| 情况 | 一次 `run` 的耗时（离线假模型） |
+|---|---|
+| 直接 `java -jar agentcore.jar` | 约 3.5 秒 |
+| `bin/agentcore`，jar 更新后第一次（解压 + 生成缓存） | 约 6.5 秒 |
+| `bin/agentcore`，之后每次 | 约 1.6 秒 |
+
+命令行命令还只用 C1 编译器（启动快）；`serve` 是长期运行的服务，保留完整的 JIT。缓存放在 `agentcore-bootstrap/target/agentcore-app/`，jar 重新构建后自动重建；`AGENTCORE_CDS=0` 关闭。
 交互模式里：`/help /new /compact /tools /usage /sessions /resume <id> /memory /exit`，运行中按 `Ctrl+C` 取消当前任务（不会退出程序）。
 
 命令行内部怎么分工：

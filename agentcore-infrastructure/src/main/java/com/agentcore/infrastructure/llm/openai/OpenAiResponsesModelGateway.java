@@ -6,7 +6,6 @@ import com.agentcore.domain.conversation.ProviderPayload;
 import com.agentcore.domain.conversation.TextBlock;
 import com.agentcore.domain.conversation.ThinkingBlock;
 import com.agentcore.domain.conversation.TokenUsage;
-import com.agentcore.domain.conversation.ToolCall;
 import com.agentcore.domain.model.ContextOverflowException;
 import com.agentcore.domain.model.ModelException;
 import com.agentcore.domain.model.ModelGateway;
@@ -26,16 +25,12 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.UUID;
 
 /**
  * OpenAI Responses API 网关（{@code POST /responses}）。OpenAI 新模型的推荐协议，
@@ -124,49 +119,14 @@ public final class OpenAiResponsesModelGateway implements ModelGateway {
 
     @Override
     public ModelResponse stream(ModelRequest request, ModelStreamListener listener, CancellationToken cancel) {
-        HttpRequest.Builder rb = HttpRequest.newBuilder(endpoint)
-                .timeout(o.timeout() == null ? Duration.ofMinutes(10) : o.timeout())
-                .header("Content-Type", "application/json")
-                .header("Accept", "text/event-stream")
-                .POST(HttpRequest.BodyPublishers.ofString(Json.write(buildBody(request))));
-        if (o.apiKey() != null && !o.apiKey().isBlank()) {
-            rb.header("Authorization", "Bearer " + o.apiKey());
-        }
-        if (o.headers() != null) {
-            o.headers().forEach(rb::header);
-        }
-        HttpResponse<InputStream> resp;
-        try {
-            resp = http.send(rb.build(), HttpResponse.BodyHandlers.ofInputStream());
-        } catch (IOException e) {
-            throw new ModelException("connection failed: " + e.getMessage(), true, null, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new CancelledException();
-        }
-        if (resp.statusCode() >= 400) {
-            String body;
-            try (InputStream in = resp.body()) {
-                body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            } catch (IOException e) {
-                body = "";
-            }
-            throw OpenAiCompatibleModelGateway.httpError(resp.statusCode(), body);
-        }
+        InputStream in = OpenAiHttp.post(http, endpoint, Json.write(buildBody(request)), o.apiKey(), o.headers(), o.timeout());
 
         // Responses 的流由一系列带 type 的事件组成。增量事件只用于实时回调；
         // 最终内容以 response.completed 里的完整 output 为准（个别兼容服务不带 output，就用逐个收到的 output_item.done）
         Map<Integer, JsonNode> doneItems = new TreeMap<>();
         JsonNode result = null;
         String lastTextItem = null;
-        InputStream in = resp.body();
-        Runnable unregister = cancel.onCancel(() -> {
-            try {
-                in.close();
-            } catch (IOException ignored) {
-                // 关闭以中断阻塞读
-            }
-        });
+        Runnable unregister = OpenAiHttp.closeOnCancel(cancel, in);
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
             String line;
             loop:
@@ -274,7 +234,8 @@ public final class OpenAiResponsesModelGateway implements ModelGateway {
                 }
                 case "function_call" -> {
                     hasCalls = true;
-                    content.add(toolCall(item));
+                    content.add(OpenAiHttp.toolCall(item.hasNonNull("call_id") ? item.get("call_id").asText() : null,
+                            item.path("name").asText(), item.path("arguments").asText("")));
                 }
                 default -> {
                     // 内置工具（web_search_call 等）：只保留在原始条目里
@@ -302,25 +263,6 @@ public final class OpenAiResponsesModelGateway implements ModelGateway {
                 reason == null ? status : status + ":" + reason, details);
     }
 
-    private static ToolCall toolCall(JsonNode item) {
-        String raw = item.path("arguments").asText("");
-        String id = item.hasNonNull("call_id") ? item.get("call_id").asText()
-                : "call_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
-        Map<String, Object> args = new LinkedHashMap<>();
-        String parseError = null;
-        try {
-            JsonNode parsed = raw.isBlank() ? Json.object() : Json.read(raw);
-            if (parsed.isObject()) {
-                args = Json.toMap(parsed);
-            } else {
-                parseError = "tool arguments must be a JSON object, got: " + clip(raw);
-            }
-        } catch (RuntimeException e) {
-            parseError = "invalid JSON arguments: " + clip(raw);
-        }
-        return new ToolCall(id, item.path("name").asText(), args, raw, parseError);
-    }
-
     /** input_tokens 含缓存命中与缓存写入部分；领域里三者分开记。 */
     static TokenUsage usageFrom(JsonNode u) {
         long input = u.path("input_tokens").asLong();
@@ -339,9 +281,5 @@ public final class OpenAiResponsesModelGateway implements ModelGateway {
         boolean retryable = code.isEmpty() || low.contains("server_error") || low.contains("rate_limit")
                 || low.contains("overloaded") || low.contains("timeout");
         return new ModelException(msg, retryable);
-    }
-
-    private static String clip(String s) {
-        return s.length() > 200 ? s.substring(0, 200) : s;
     }
 }

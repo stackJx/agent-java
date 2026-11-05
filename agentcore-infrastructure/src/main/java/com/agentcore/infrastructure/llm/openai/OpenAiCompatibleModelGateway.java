@@ -5,8 +5,6 @@ import com.agentcore.domain.conversation.Message;
 import com.agentcore.domain.conversation.TextBlock;
 import com.agentcore.domain.conversation.ThinkingBlock;
 import com.agentcore.domain.conversation.TokenUsage;
-import com.agentcore.domain.conversation.ToolCall;
-import com.agentcore.domain.model.ContextOverflowException;
 import com.agentcore.domain.model.ModelException;
 import com.agentcore.domain.model.ModelGateway;
 import com.agentcore.domain.model.ModelRequest;
@@ -26,16 +24,12 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.UUID;
 
 /**
  * OpenAI Chat Completions 兼容网关：DeepSeek、通义千问、Kimi、智谱 GLM、OpenRouter、OpenAI，
@@ -118,35 +112,7 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
 
     @Override
     public ModelResponse stream(ModelRequest request, ModelStreamListener listener, CancellationToken cancel) {
-        HttpRequest.Builder rb = HttpRequest.newBuilder(endpoint)
-                .timeout(o.timeout() == null ? Duration.ofMinutes(10) : o.timeout())
-                .header("Content-Type", "application/json")
-                .header("Accept", "text/event-stream")
-                .POST(HttpRequest.BodyPublishers.ofString(Json.write(buildBody(request))));
-        if (o.apiKey() != null && !o.apiKey().isBlank()) {
-            rb.header("Authorization", "Bearer " + o.apiKey());
-        }
-        if (o.headers() != null) {
-            o.headers().forEach(rb::header);
-        }
-        HttpResponse<InputStream> resp;
-        try {
-            resp = http.send(rb.build(), HttpResponse.BodyHandlers.ofInputStream());
-        } catch (IOException e) {
-            throw new ModelException("connection failed: " + e.getMessage(), true, null, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new CancelledException();
-        }
-        if (resp.statusCode() >= 400) {
-            String body;
-            try (InputStream in = resp.body()) {
-                body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            } catch (IOException e) {
-                body = "";
-            }
-            throw httpError(resp.statusCode(), body);
-        }
+        InputStream in = OpenAiHttp.post(http, endpoint, Json.write(buildBody(request)), o.apiKey(), o.headers(), o.timeout());
 
         // 流式响应是一串 "data: {chunk}" 行，每个 chunk 只带一点增量（delta）。
         // 文字、思考直接拼接；工具调用按 index 分别累加（id、name 只在第一块出现，arguments 分多块到达）
@@ -156,15 +122,7 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
         String finish = null;
         TokenUsage usage = new TokenUsage(0, 0, 0, 0, 1);
         String modelName = model;
-        InputStream in = resp.body();
-        // 取消时直接关闭输入流，阻塞中的 readLine 会立刻抛出 IOException
-        Runnable unregister = cancel.onCancel(() -> {
-            try {
-                in.close();
-            } catch (IOException ignored) {
-                // 关闭以中断阻塞读
-            }
-        });
+        Runnable unregister = OpenAiHttp.closeOnCancel(cancel, in);
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -222,7 +180,7 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
                         }
                         if (!acc.started && !acc.name.isEmpty()) {
                             if (acc.id == null) {
-                                acc.id = "call_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+                                acc.id = OpenAiHttp.newCallId();
                             }
                             acc.started = true;
                             listener.onToolCallStart(acc.id, acc.name);
@@ -262,21 +220,7 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
             content.add(new TextBlock(text.toString()));
         }
         for (Acc acc : calls.values()) {
-            String raw = acc.args.toString();
-            String id = acc.id != null ? acc.id : "call_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
-            Map<String, Object> args = new LinkedHashMap<>();
-            String parseError = null;
-            try {
-                JsonNode parsed = raw.isBlank() ? Json.object() : Json.read(raw);
-                if (parsed.isObject()) {
-                    args = Json.toMap(parsed);
-                } else {
-                    parseError = "tool arguments must be a JSON object, got: " + clip(raw);
-                }
-            } catch (RuntimeException e) {
-                parseError = "invalid JSON arguments: " + clip(raw);
-            }
-            content.add(new ToolCall(id, acc.name, args, raw, parseError));
+            content.add(OpenAiHttp.toolCall(acc.id, acc.name, acc.args.toString()));
         }
         StopReason stop = switch (finish == null ? "stop" : finish) {
             case "tool_calls", "function_call" -> StopReason.TOOL_USE;
@@ -297,10 +241,6 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
         final StringBuilder args = new StringBuilder();
     }
 
-    private static String clip(String s) {
-        return s.length() > 200 ? s.substring(0, 200) : s;
-    }
-
     static TokenUsage usageFrom(JsonNode u) {
         long prompt = u.path("prompt_tokens").asLong();
         long cached = u.path("prompt_tokens_details").path("cached_tokens").asLong(0);
@@ -308,16 +248,5 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
             cached = u.path("prompt_cache_hit_tokens").asLong(0); // DeepSeek
         }
         return new TokenUsage(Math.max(prompt - cached, 0), u.path("completion_tokens").asLong(), cached, 0, 1);
-    }
-
-    static ModelException httpError(int status, String body) {
-        String msg = "HTTP " + status + ": " + (body.length() > 800 ? body.substring(0, 800) : body);
-        String low = body.toLowerCase();
-        if (status == 400 && (low.contains("context_length") || low.contains("maximum context") || low.contains("context window")
-                || low.contains("too long"))) {
-            return new ContextOverflowException(msg, null);
-        }
-        boolean retryable = status == 408 || status == 409 || status == 429 || status >= 500;
-        return new ModelException(msg, retryable, status, null);
     }
 }

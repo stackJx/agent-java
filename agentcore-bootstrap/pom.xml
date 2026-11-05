@@ -35,7 +35,7 @@
         <version>${spring-boot.version}</version>
         <configuration>
           <mainClass>com.agentcore.bootstrap.AgentCoreApplication</mainClass>
-          <!-- ZIP 布局使用 PropertiesLauncher：可以用 -Dloader.path 追加外部 jar（例如 JDBC 驱动） -->
+          <!-- bin/agentcore 运行的是解压后的目录（配合 CDS 缓存）；直接 java -jar 时，ZIP 布局支持用 -Dloader.path 追加外部 jar -->
           <layout>ZIP</layout>
         </configuration>
         <executions>

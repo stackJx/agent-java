@@ -24,7 +24,4 @@ public record ModelRequest(String system, List<Message> messages, List<ToolSpec>
         return new ModelRequest(system, messages, tools, null, Map.of());
     }
 
-    public ModelRequest withSystem(String newSystem) {
-        return new ModelRequest(newSystem, messages, tools, maxTokens, options);
-    }
 }

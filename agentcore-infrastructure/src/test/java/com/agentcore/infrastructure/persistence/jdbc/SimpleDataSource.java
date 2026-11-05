@@ -8,11 +8,8 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.util.logging.Logger;
 import javax.sql.DataSource;
 
-/**
- * 基于 DriverManager 的最简数据源（独立部署 / 命令行用；每次新建连接，不带连接池）。
- * 在 Spring 等容器里请使用容器提供的连接池数据源。
- */
-public final class SimpleDataSource implements DataSource {
+/** 测试用的最简数据源：基于 DriverManager，每次新建连接。正式运行时用 Spring Boot 配置的连接池（spring.datasource）。 */
+final class SimpleDataSource implements DataSource {
 
     private final String url;
     private final String username;

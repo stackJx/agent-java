@@ -1,19 +1,45 @@
 #!/usr/bin/env bash
-# agentcore 启动脚本（Spring Boot 可执行 jar）：首次运行时自动构建。
-# 额外的 jar（例如 JDBC 驱动）通过 AGENTCORE_CLASSPATH 追加，多个用冒号分隔，也可以写目录：
+# agentcore 启动脚本：首次运行时自动构建。
+#
+# 为了启动快，运行的不是打包好的 jar 本身，而是它解压后的目录 + JVM 类数据共享（CDS）缓存：
+#   - jar 更新后第一次运行：解压到 agentcore-bootstrap/target/agentcore-app/，运行结束时生成缓存 agentcore.jsa
+#   - 之后每次：直接映射缓存里已经加载好的类，启动时间大约减少一半
+#   - 命令行命令（chat / run / sessions）只用 C1 编译器，启动更快；serve 是长期运行的服务，保留完整的 JIT
+#
+# 额外的 jar（例如 JDBC 驱动）通过 AGENTCORE_CLASSPATH 追加，多个用冒号分隔，整个目录写成 /opt/drivers/*：
 #   AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar bin/agentcore serve
-# JVM 参数用 AGENTCORE_JAVA_OPTS，例如 AGENTCORE_JAVA_OPTS="-Xmx1g"。
+# JVM 参数用 AGENTCORE_JAVA_OPTS（例如 "-Xmx1g"）；AGENTCORE_CDS=0 关闭缓存。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JAR="$ROOT/agentcore-bootstrap/target/agentcore.jar"
+APP="$ROOT/agentcore-bootstrap/target/agentcore-app"
+MAIN=com.agentcore.bootstrap.AgentCoreApplication
+
 if [[ ! -f "$JAR" ]]; then
   echo "首次运行，正在构建 $JAR ..." >&2
   (cd "$ROOT" && mvn -q -DskipTests install) >&2
 fi
-LOADER=()
-if [[ -n "${AGENTCORE_CLASSPATH:-}" ]]; then
-  # Spring Boot 的 PropertiesLauncher 用 loader.path 加载外部 jar，多个用逗号分隔
-  LOADER=("-Dloader.path=${AGENTCORE_CLASSPATH//:/,}")
+
+# jar 比解压目录新（刚重新构建过）就重新解压；旧缓存跟着删掉，下次运行重新生成
+if [[ ! -f "$APP/agentcore.jar" || "$JAR" -nt "$APP/agentcore.jar" ]]; then
+  TMP="$APP.tmp.$$"
+  rm -rf "$TMP"
+  java -Djarmode=tools -jar "$JAR" extract --destination "$TMP" >/dev/null
+  rm -rf "$APP"
+  mv "$TMP" "$APP"
 fi
+
+OPTS=()
+if [[ "${AGENTCORE_CDS:-1}" != "0" ]]; then
+  # 缓存不存在或和当前 classpath 对不上时自动重建；JVM 日志只输出错误且写 stderr，stdout 只留给答案和事件
+  OPTS+=("-XX:SharedArchiveFile=$APP/agentcore.jsa" "-XX:+AutoCreateSharedArchive" "-Xlog:disable" "-Xlog:all=error:stderr")
+fi
+SERVE=0
+for a in "$@"; do [[ "$a" == "serve" ]] && SERVE=1; done
+if [[ $SERVE == 0 ]]; then
+  OPTS+=("-XX:TieredStopAtLevel=1")
+fi
+
+CP="$APP/agentcore.jar${AGENTCORE_CLASSPATH:+:$AGENTCORE_CLASSPATH}"
 # shellcheck disable=SC2086
-exec java ${AGENTCORE_JAVA_OPTS:-} "${LOADER[@]}" -jar "$JAR" "$@"
+exec java "${OPTS[@]}" ${AGENTCORE_JAVA_OPTS:-} -cp "$CP" "$MAIN" "$@"

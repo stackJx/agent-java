@@ -35,7 +35,7 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
 
 没有 API Key 时可以先用离线假模型体验：`bin/agentcore -m mock`。
 
-`bin/agentcore` 本身就是一个 Spring Boot 应用：组装全部由 `agentcore-spring-boot-starter` 完成，配置文件格式和 Spring Boot 的 `application.yml` 一样，任意配置项都可以用 `--配置项=值` 从命令行覆盖（例如 `--agentcore.web.token=xxx`）。
+`bin/agentcore` 本身就是一个 Spring Boot 应用（启动脚本用 JVM 的类数据共享缓存加速：jar 更新后第一次运行约 6 秒，之后每次约 1.6 秒；`AGENTCORE_CDS=0` 可关闭）：组装全部由 `agentcore-spring-boot-starter` 完成，配置文件格式和 Spring Boot 的 `application.yml` 一样，任意配置项都可以用 `--配置项=值` 从命令行覆盖（例如 `--agentcore.web.token=xxx`）。
 
 交互模式命令：`/help /new /compact /tools /usage /sessions /resume <id> /memory /exit`；运行中按 `Ctrl+C` 取消当前任务。
 
@@ -362,7 +362,7 @@ agentcore:
       memory-scope: default
 ```
 
-独立部署版的 jar 里不带 JDBC 驱动，通过 `AGENTCORE_CLASSPATH` 加进来（多个用冒号分隔，也可以写目录）。单机不想装数据库时用 SQLite：
+独立部署版的 jar 里不带 JDBC 驱动，通过 `AGENTCORE_CLASSPATH` 加进来（多个用冒号分隔，整个目录写成 `/opt/drivers/*`）。单机不想装数据库时用 SQLite：
 
 ```bash
 AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar bin/agentcore serve

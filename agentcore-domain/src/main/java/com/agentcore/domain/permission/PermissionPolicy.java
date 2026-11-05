@@ -52,10 +52,6 @@ public final class PermissionPolicy {
         return mode;
     }
 
-    public List<PermissionRule> allowRules() {
-        return List.copyOf(allow);
-    }
-
     public Verdict check(Tool tool, Map<String, Object> arguments) {
         String subject = tool.permissionSubject(arguments);
         for (PermissionRule r : deny) {
