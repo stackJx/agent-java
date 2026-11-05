@@ -153,7 +153,8 @@ sequenceDiagram
 
 | | Anthropic | Chat Completions | Responses |
 |---|---|---|---|
-| 拼完整消息 | SDK 的 `BetaMessageAccumulator` | 自己按 `index` 累加 `tool_calls` 增量 | 直接用 `response.completed` 里的 `output` |
+| 读流 | SDK 迭代事件 | `OpenAiHttp.readEvents`（两个 OpenAI 网关共用） | 同左 |
+| 拼完整消息 | SDK 的 `BetaMessageAccumulator` | 内部类 `StreamedReply` 按 `index` 累加 `tool_calls` 增量 | 内部类 `StreamedResponse` 取 `response.completed` 里的 `output` |
 | 停止原因 | `stop_reason` | `finish_reason` | `status` + `incomplete_details.reason` |
 | 结束标志 | `message_stop` | `data: [DONE]` | `response.completed` / `response.incomplete` |
 | 流中报错 | SDK 抛异常 | `error` 字段 | `response.failed` / `error` 事件 |
