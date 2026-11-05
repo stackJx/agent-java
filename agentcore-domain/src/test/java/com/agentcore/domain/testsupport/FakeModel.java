@@ -1,4 +1,4 @@
-package com.agentcore.domain;
+package com.agentcore.domain.testsupport;
 
 import com.agentcore.domain.context.service.TokenEstimator;
 import com.agentcore.domain.conversation.message.ContentBlock;

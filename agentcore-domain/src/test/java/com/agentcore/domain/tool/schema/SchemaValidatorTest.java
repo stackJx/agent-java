@@ -1,9 +1,7 @@
-package com.agentcore.domain;
+package com.agentcore.domain.tool.schema;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.agentcore.domain.tool.schema.SchemaValidator;
-import com.agentcore.domain.tool.schema.Schemas;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;

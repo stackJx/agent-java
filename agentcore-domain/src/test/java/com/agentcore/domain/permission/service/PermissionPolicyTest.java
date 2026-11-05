@@ -1,10 +1,8 @@
-package com.agentcore.domain;
+package com.agentcore.domain.permission.service;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.agentcore.domain.permission.model.Decision;
-import com.agentcore.domain.permission.service.PermissionPolicy;
-import com.agentcore.domain.permission.service.RulePermissionPolicy;
 import com.agentcore.domain.tool.model.FunctionTool;
 import com.agentcore.domain.tool.model.Tool;
 import com.agentcore.domain.tool.model.ToolOutput;

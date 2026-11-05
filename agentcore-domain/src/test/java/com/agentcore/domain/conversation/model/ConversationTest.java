@@ -1,4 +1,4 @@
-package com.agentcore.domain;
+package com.agentcore.domain.conversation.model;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -7,8 +7,6 @@ import com.agentcore.domain.conversation.message.Message;
 import com.agentcore.domain.conversation.message.TextBlock;
 import com.agentcore.domain.conversation.message.ToolCall;
 import com.agentcore.domain.conversation.message.ToolResult;
-import com.agentcore.domain.conversation.model.Conversation;
-import com.agentcore.domain.conversation.model.TokenUsage;
 import com.agentcore.domain.shared.exception.DomainException;
 import com.agentcore.domain.shared.model.DomainEvent;
 import java.util.ArrayList;

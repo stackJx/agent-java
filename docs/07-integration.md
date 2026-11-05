@@ -204,7 +204,7 @@ AgentService service = new AgentService(engine, repository);
 
 | 想测什么 | 用什么 |
 |---|---|
-| 引擎逻辑（工具循环、权限、取消……） | `ScriptedModelGateway`：按脚本返回预先写好的回复，见 `AgentEngineTest` |
+| 引擎逻辑（工具循环、权限、取消……） | `FakeModel`（领域层测试替身，在 `testsupport` 包）：按脚本返回预先写好的回复，见 `AgentEngineTest`；基础设施层的同类替身是 `ScriptedModelGateway` |
 | 模型适配器的协议解析 | `FakeSseServer`：本地起一个假的 HTTP 服务，按顺序返回写好的 SSE 帧，并记录收到的请求，见 `ModelGatewayTest`、`OpenAiResponsesGatewayTest` |
 | 存储 | `InMemoryConversationRepository`；数据库用 SQLite 临时文件或 H2，见 `JdbcRepositoryTest` |
 | Spring 装配与 Web 接口 | `ApplicationContextRunner` / `@SpringBootTest`，见 `AgentCoreAutoConfigurationTest`、`AgentControllerTest`、`AgentWebTokenTest` |
@@ -214,3 +214,5 @@ AgentService service = new AgentService(engine, repository);
 mvn test        # 全部测试
 mvn -pl agentcore-domain test -Dtest=AgentEngineTest   # 只跑一个
 ```
+
+测试与主源码使用同一套分包规则：被测类的测试放在对应包下（例如 `agent/service/AgentEngineTest`、`conversation/model/ConversationTest`），跨测试共用的测试替身放在 `testsupport` 包。领域层已按此整理，其他模块的测试同样适用。

@@ -1,7 +1,7 @@
-package com.agentcore.domain;
+package com.agentcore.domain.agent.service;
 
-import static com.agentcore.domain.FakeModel.call;
-import static com.agentcore.domain.FakeModel.reply;
+import static com.agentcore.domain.testsupport.FakeModel.call;
+import static com.agentcore.domain.testsupport.FakeModel.reply;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.agentcore.domain.agent.event.AgentEvent;
@@ -11,7 +11,6 @@ import com.agentcore.domain.agent.model.AgentDefinition;
 import com.agentcore.domain.agent.model.EngineSettings;
 import com.agentcore.domain.agent.model.RunControl;
 import com.agentcore.domain.agent.model.RunResult;
-import com.agentcore.domain.agent.service.AgentEngine;
 import com.agentcore.domain.context.model.CompactionSettings;
 import com.agentcore.domain.context.service.ConversationCompactor;
 import com.agentcore.domain.conversation.message.Message;
@@ -24,6 +23,7 @@ import com.agentcore.domain.llm.exception.ModelException;
 import com.agentcore.domain.llm.model.StopReason;
 import com.agentcore.domain.permission.model.Approval;
 import com.agentcore.domain.permission.service.PermissionPolicy;
+import com.agentcore.domain.testsupport.FakeModel;
 import com.agentcore.domain.tool.model.FunctionTool;
 import com.agentcore.domain.tool.model.Tool;
 import com.agentcore.domain.tool.model.ToolContext;
