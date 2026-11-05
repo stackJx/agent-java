@@ -5,7 +5,17 @@
 
 ## 1. 一次工具调用经过的关卡
 
-代码在 `AgentEngine.Run#runTool`。任何一关没通过，都不会抛异常中断运行，而是生成一个**错误结果**交还给模型，让它自己调整做法。
+每个调用由 `ToolExecutor` 执行：先查找工具（关卡 1），然后依次经过一条**拦截器链**（`domain/agent/interceptor/`），链的末端才真正执行工具（关卡 7）。任何一关没通过，都不会抛异常中断运行，而是生成一个**错误结果**交还给模型，让它自己调整做法。
+
+| 关卡 | 在哪 |
+|---|---|
+| 1 工具存在 | `ToolExecutor` |
+| 2、3 参数是 JSON、符合 Schema | `ArgumentsInterceptor` |
+| 4、5 权限策略、审批 | `PermissionInterceptor` |
+| （使用者自己的拦截器） | 插在这里，见本篇第 4 节 |
+| 6、9 beforeTool / afterTool 钩子 | `HookInterceptor` |
+| 8 截断过长输出 | `TruncateInterceptor` |
+| 7 执行（超时、取消） | `ToolExecutor`，链的末端 |
 
 ```mermaid
 flowchart TD
@@ -181,6 +191,25 @@ public class RefundLimitHook implements AgentHook {
 ```
 
 模型会收到 `Blocked by policy hook: 单笔退款超过 100 元……`，然后自然地告诉用户已转人工。
+
+### 拦截器：更底层的扩展点
+
+钩子是给业务方的简单接口；需要包住整个执行过程（计时、追踪、限流、沙箱检查）时，实现 `ToolInterceptor`：
+
+```java
+ToolInterceptor sandbox = (inv, chain) -> {
+    if (inv.arguments().get("path") instanceof String p && p.startsWith("/etc/")) {
+        return ToolOutput.error("Blocked by sandbox: outside workspace");   // 拦下：错误交给模型
+    }
+    long t0 = System.nanoTime();
+    ToolOutput out = chain.proceed(inv);                                    // 放行，执行后面的链
+    metrics.record(inv.tool().name(), System.nanoTime() - t0);              // 执行后加工
+    return out;
+};
+AgentEngine.builder()....interceptor(sandbox)    // Spring Boot 里定义 ToolInterceptor 类型的 Bean 即可
+```
+
+使用者的拦截器排在参数校验、权限审批之后，所以看到的都是参数合法、已经批准的调用。子 Agent 复制父引擎时会带上它们。
 
 **权限和钩子的分工**：权限规则是通用的、可配置的"能不能用这个工具"；钩子是写在代码里的业务规则，能看到解析后的参数，判断更细。
 

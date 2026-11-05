@@ -114,13 +114,14 @@ flowchart LR
 | `repository` | 存取数据的端口，基础设施层实现 | `conversation.repository.ConversationRepository` |
 | `gateway` | 调用外部系统或人的端口，基础设施层或接口层实现 | `llm.gateway.ModelGateway`、`permission.gateway.Approver` |
 | `exception` | 本模块的异常 | `llm.exception.ContextOverflowException` |
-| 其他 | 按职责命名 | `conversation.message`（消息这一组值对象）、`tool.schema`、`agent.hook`、`shared.cancel` |
+| 其他 | 按职责命名 | `conversation.message`（消息这一组值对象）、`tool.schema`、`agent.hook`、`agent.interceptor`、`shared.cancel` |
 
 完整结构（`com.agentcore.domain` 下）：
 
 ```text
 agent            Agent 运行
-├── service      AgentEngine（主循环）
+├── service      AgentEngine（主循环 ①～⑩）· ToolExecutor（工具分批并行）
+├── interceptor  ToolInterceptor · ToolInvocation · 参数校验 / 权限审批 / 钩子 / 截断 四个内置拦截器
 ├── model        AgentDefinition · EngineSettings · RunControl · RunResult
 ├── event        AgentEvent · AgentEventListener
 └── hook         AgentHook · HookDecision
@@ -134,7 +135,7 @@ context          上下文管理
 └── service      ConversationCompactor · TokenEstimator
 llm              大模型
 ├── model        ModelRequest · ModelResponse · StopReason · ToolSpec
-├── gateway      ModelGateway · ModelStreamListener
+├── gateway      ModelGateway · ModelStreamListener · RetryingModelGateway（重试装饰器）
 └── exception    ModelException · ContextOverflowException · MalformedOutputException
 tool             工具
 ├── model        Tool · FunctionTool · ToolContext · ToolOutput · ToolRegistry · PermissionLevel

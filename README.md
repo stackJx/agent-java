@@ -22,7 +22,7 @@
 
 ```bash
 cd agentcore-java
-mvn -q install                                   # 构建并运行 85 个测试，生成 agentcore-bootstrap/target/agentcore.jar
+mvn -q install                                   # 构建并运行 94 个测试，生成 agentcore-bootstrap/target/agentcore.jar
 
 export DEEPSEEK_API_KEY=sk-...                   # 或 ANTHROPIC_API_KEY=...
 bin/agentcore                                    # 交互式对话
@@ -248,7 +248,7 @@ public class SupportFacade {
 | `MemoryRepository` / `SkillCatalog` | 文件目录（开启 JDBC 存储时记忆也存数据库） | 配置中心等 |
 | `PermissionPolicy`（接口） | `RulePermissionPolicy`：按 `agentcore.permissions.*` 规则判定 | 自己实现：按租户、角色或公司权限系统判断 |
 | `ToolRegistry` | 内置工具 + 记忆 + Skills + MCP + task + 容器里的 `Tool` / `@AgentTool` Bean | — |
-| `AgentEngine` / `AgentService` | 由以上组件组装 | — |
+| `AgentEngine` / `AgentService` | 由以上组件组装；容器里的 `AgentHook`、`ToolInterceptor` Bean 自动加入 | — |
 | `AgentController`（接口层） | `{base-path}` 下的 REST + SSE 接口，独立部署版用的也是它；`agentcore.web.token` 开启 Bearer 鉴权 | `agentcore.web.enabled=false` 关闭后自己写 |
 
 配置项有完整的 IDE 提示（starter 生成了 `spring-configuration-metadata.json`）。完整示例见 `agentcore-spring-boot-sample/`：
@@ -405,6 +405,7 @@ AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
 | 加业务工具 | `@AgentTool` 注解方法，或 `FunctionTool`，或实现 `Tool` 接口 |
 | 接外部系统 | 写成 MCP 服务器后配置 `agentcore.mcp-servers`，或直接写工具 |
 | 审计 / 脱敏 / 风控 | 实现 `AgentHook` |
+| 沙箱检查 / 调用链追踪 / 限流 / 耗时统计（包住每个工具调用） | 实现 `ToolInterceptor`（拦截器链，排在参数校验和权限审批之后） |
 | 接审批流（钉钉、飞书、工单…） | 实现 `Approver`（可以阻塞等待；`PermissionRequest.requestId` 用于异步回传） |
 | 定制人设与流程 | `agentcore.agent.system-prompt` / `agentcore.agent.instructions` / 项目里放 `AGENTS.md` |
 | 领域知识包 | skills 目录放 `<name>/SKILL.md`（frontmatter 写 name、description） |
@@ -428,7 +429,7 @@ AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
 ## 测试
 
 ```bash
-mvn test        # 85 个测试，不需要任何 API Key
+mvn test        # 94 个测试，不需要任何 API Key
 ```
 
 | 模块 | 覆盖 |

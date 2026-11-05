@@ -188,7 +188,8 @@ AgentService service = new AgentService(engine, repository);
 |---|---|---|
 | 加一个业务工具 | 写 `@AgentTool` 方法；或 `FunctionTool.builder` | [04 §5](04-tools-and-permissions.md#5-定义工具的四种方式)、`OrderTools.java` |
 | 换掉权限判断逻辑（按租户、角色、公司权限系统） | 实现 `PermissionPolicy` 接口，Spring 里定义同类型 Bean | [04 §2](04-tools-and-permissions.md#2-权限策略) |
-| 加一条业务规则（拦截、改参数、脱敏） | 实现 `AgentHook` | [04 §4](04-tools-and-permissions.md#4-钩子不改引擎代码插入自己的规则)、`RefundLimitHook.java` |
+| 加一条业务规则（拦截、改参数、脱敏） | 实现 `AgentHook` |
+| 给所有工具调用加沙箱检查、追踪、限流、耗时统计 | 实现 `ToolInterceptor`，Spring 里定义同类型 Bean | [04 §4](04-tools-and-permissions.md#4-钩子不改引擎代码插入自己的规则) | [04 §4](04-tools-and-permissions.md#4-钩子不改引擎代码插入自己的规则)、`RefundLimitHook.java` |
 | 接入公司的审批系统 / IM | 实现 `Approver`；或用 `AsyncApprover` 接一个通道 | [04 §3](04-tools-and-permissions.md#3-审批谁来回答可以吗) |
 | 接一个新模型厂商 | 实现 `ModelGateway`，在 `ModelGatewayFactory` 里加 `type` | [05 §7](05-model-gateways.md#7-接一个新厂商) |
 | 会话存到别的存储（Redis、Mongo…） | 实现 `ConversationRepository`：追加事件、按顺序读出重放 | [06 §2](06-persistence.md#2-共同的原理只追加事件)、`JsonlConversationRepository.java` |

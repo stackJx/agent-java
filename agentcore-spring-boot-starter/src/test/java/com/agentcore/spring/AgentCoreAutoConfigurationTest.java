@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.agentcore.application.AgentService;
 import com.agentcore.domain.agent.hook.AgentHook;
 import com.agentcore.domain.agent.hook.HookDecision;
+import com.agentcore.domain.agent.interceptor.ToolInterceptor;
 import com.agentcore.domain.agent.model.RunResult;
 import com.agentcore.domain.agent.service.AgentEngine;
 import com.agentcore.domain.conversation.message.ToolCall;
@@ -137,6 +138,13 @@ class AgentCoreAutoConfigurationTest {
                     assertThat(ctx.getBean(AgentEngine.class).definition().systemPrompt()).contains("用中文回答");
                     assertThat(ctx.getBean(PermissionPolicy.class)).isInstanceOf(RulePermissionPolicy.class); // 默认：配置规则
                 });
+    }
+
+    @Test
+    void toolInterceptorBeansJoinTheChain() {
+        ToolInterceptor audit = (inv, chain) -> chain.proceed(inv);
+        runner().withBean(ToolInterceptor.class, () -> audit)
+                .run(ctx -> assertThat(ctx.getBean(AgentEngine.class).interceptors()).containsExactly(audit));
     }
 
     @Test

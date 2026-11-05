@@ -9,7 +9,7 @@
  *       例如 {@code permission.service.PermissionPolicy}（接口）+ {@code RulePermissionPolicy}（默认实现）；</li>
  *   <li>{@code repository}：持久化或读取数据的端口（由基础设施层实现）；</li>
  *   <li>{@code gateway}：调用外部系统或人的端口（模型、审批、提问，由基础设施层或接口层实现）；</li>
- *   <li>{@code exception}：本模块的异常；其他按职责命名（{@code tool.schema}、{@code agent.hook}、{@code shared.cancel}）。</li>
+ *   <li>{@code exception}：本模块的异常；其他按职责命名（{@code tool.schema}、{@code agent.hook}、{@code agent.interceptor}、{@code shared.cancel}）。</li>
  * </ul>
  *
  * <p>模块：

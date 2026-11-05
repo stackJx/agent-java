@@ -7,6 +7,7 @@ import com.agentcore.application.subagent.TaskTool;
 import com.agentcore.application.tool.MemoryTools;
 import com.agentcore.application.tool.SkillTool;
 import com.agentcore.domain.agent.hook.AgentHook;
+import com.agentcore.domain.agent.interceptor.ToolInterceptor;
 import com.agentcore.domain.agent.model.AgentDefinition;
 import com.agentcore.domain.agent.model.EngineSettings;
 import com.agentcore.domain.agent.service.AgentEngine;
@@ -52,6 +53,7 @@ import org.springframework.context.annotation.Bean;
  * <ul>
  *   <li>带 {@code @AgentTool} 方法的 Bean、以及 {@code Tool} 类型的 Bean → 注册为工具；</li>
  *   <li>{@link AgentHook} Bean → 引擎钩子（按 {@code @Order} 排序）；</li>
+ *   <li>{@link ToolInterceptor} Bean → 工具调用拦截器，排在参数校验、权限审批之后（按 {@code @Order} 排序）；</li>
  *   <li>{@link Approver} / {@link UserPrompter} Bean → 审批与提问端口。</li>
  * </ul>
  */
@@ -169,7 +171,8 @@ public class AgentCoreAutoConfiguration {
     public AgentEngine agentEngine(AgentCoreProperties props, ModelGateway model, ToolRegistry tools, PermissionPolicy permissions,
                                    ConversationRepository repository, ObjectProvider<MemoryRepository> memory, SkillCatalog skills,
                                    McpServerManager mcp, ObjectProvider<Approver> approver, ObjectProvider<UserPrompter> prompter,
-                                   ObjectProvider<AgentHook> hooks, ObjectProvider<TaskTool> taskTool,
+                                   ObjectProvider<AgentHook> hooks, ObjectProvider<ToolInterceptor> interceptors,
+                                   ObjectProvider<TaskTool> taskTool,
                                    ObjectProvider<AgentSummarizer> summarizer) {
         AgentCoreProperties.Agent a = props.getAgent();
         Path cwd = props.workingDirectory();
@@ -193,6 +196,7 @@ public class AgentCoreAutoConfiguration {
                 .permissions(permissions)
                 .approver(approver.getIfAvailable())
                 .hooks(hooks.orderedStream().toList())
+                .interceptors(interceptors.orderedStream().toList())
                 .repository(repository)
                 .compactor(new ConversationCompactor(new CompactionSettings(c.getThreshold(), c.getMaxTokens(), 8000, 120_000)));
         summarizer.ifAvailable(s -> b.summarizer(s.gateway()));

@@ -45,7 +45,7 @@
 **半天版：能改代码**
 
 1. 按上面 30 分钟版走一遍。
-2. 对照 [02](02-agent-loop.md) 读 `AgentEngine.java`（`agentcore-domain/.../agent/service/AgentEngine.java`），代码里的 ①②③ 编号和文档里的步骤一一对应。
+2. 对照 [02](02-agent-loop.md) 读 `AgentEngine.java`（`agentcore-domain/.../agent/service/AgentEngine.java`），代码里的 ①②③ 编号和文档里的步骤一一对应；工具怎么执行看同目录的 `ToolExecutor` 和 `agent/interceptor/` 下的拦截器。
 3. 读 [03](03-conversation.md) 和 `Conversation.java`，理解"历史永远合法"这条规则。
 4. 在 IDE 里给 `AgentEngine.Run#execute` 打断点，运行 `AgentEngineTest`，单步走一遍。
 5. 需要哪块再看 04～07。

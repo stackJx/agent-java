@@ -3,7 +3,11 @@ package com.agentcore.domain.agent.service;
 import com.agentcore.domain.agent.event.AgentEvent;
 import com.agentcore.domain.agent.event.AgentEventListener;
 import com.agentcore.domain.agent.hook.AgentHook;
-import com.agentcore.domain.agent.hook.HookDecision;
+import com.agentcore.domain.agent.interceptor.ArgumentsInterceptor;
+import com.agentcore.domain.agent.interceptor.HookInterceptor;
+import com.agentcore.domain.agent.interceptor.PermissionInterceptor;
+import com.agentcore.domain.agent.interceptor.ToolInterceptor;
+import com.agentcore.domain.agent.interceptor.TruncateInterceptor;
 import com.agentcore.domain.agent.model.AgentDefinition;
 import com.agentcore.domain.agent.model.EngineSettings;
 import com.agentcore.domain.agent.model.RunControl;
@@ -19,64 +23,45 @@ import com.agentcore.domain.conversation.model.Conversation;
 import com.agentcore.domain.conversation.model.TokenUsage;
 import com.agentcore.domain.conversation.repository.ConversationRepository;
 import com.agentcore.domain.llm.exception.ContextOverflowException;
-import com.agentcore.domain.llm.exception.MalformedOutputException;
-import com.agentcore.domain.llm.exception.ModelException;
 import com.agentcore.domain.llm.gateway.ModelGateway;
-import com.agentcore.domain.llm.gateway.ModelStreamListener;
+import com.agentcore.domain.llm.gateway.RetryingModelGateway;
 import com.agentcore.domain.llm.model.ModelRequest;
 import com.agentcore.domain.llm.model.ModelResponse;
 import com.agentcore.domain.llm.model.StopReason;
 import com.agentcore.domain.permission.gateway.Approver;
-import com.agentcore.domain.permission.model.Approval;
-import com.agentcore.domain.permission.model.Decision;
-import com.agentcore.domain.permission.model.PermissionRequest;
 import com.agentcore.domain.permission.service.PermissionPolicy;
+import com.agentcore.domain.shared.cancel.CancellationToken;
 import com.agentcore.domain.shared.cancel.CancelledException;
-import com.agentcore.domain.shared.util.Texts;
-import com.agentcore.domain.tool.exception.ToolException;
-import com.agentcore.domain.tool.model.Tool;
-import com.agentcore.domain.tool.model.ToolContext;
-import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.domain.tool.model.ToolRegistry;
-import com.agentcore.domain.tool.schema.SchemaValidator;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Agent 引擎（领域服务）：驱动一次运行的完整循环。
  *
  * <pre>
- * 用户输入 → [必要时压缩上下文] → 调模型(流式) → 有工具调用?
- *    ├─ 是：参数校验 → 权限策略/审批 → beforeTool 钩子 → 执行（只读工具并行）→ afterTool 钩子 → 回填 → 下一轮
+ * 用户输入 → [必要时压缩上下文] → 调模型(流式，自动重试) → 有工具调用?
+ *    ├─ 是：交给 ToolExecutor（只读工具并行；每个调用走一遍拦截器链）→ 回填 → 下一轮
  *    └─ 否：结束（或处理 max_tokens / refusal / pause_turn / 超窗）
  * </pre>
  *
+ * 分工：
+ * <ul>
+ *   <li>本类：主循环 ①～⑩（{@code Run#execute}）和上下文压缩（{@code Run#compact}）；</li>
+ *   <li>{@link ToolExecutor}：工具分批并行执行；单个调用的关卡 1～9 分散在它和 {@code agent.interceptor} 的拦截器里；</li>
+ *   <li>{@link RetryingModelGateway}：调模型时的退避重试（装饰器，包在模型外面）。</li>
+ * </ul>
  * 只依赖领域端口（ModelGateway、Approver、ConversationRepository、Tool），与具体厂商和框架无关。
  * 引擎本身无状态（每个会话的工具状态按会话隔离），可被多个会话并发使用。
- *
- * <p>阅读顺序：{@code Run#execute}（主循环）→ {@code Run#callModel}（重试）→ {@code Run#executeTools}（分批并行）
- * → {@code Run#runTool}（单个工具调用的各道关卡）→ {@code Run#compact}（压缩）。
  * 注释里的 ①～⑩ 与 docs/02-agent-loop.md 的流程图对应，1～9 与 docs/04-tools-and-permissions.md 的关卡图对应。
  */
 public final class AgentEngine {
 
     private static final System.Logger LOG = System.getLogger(AgentEngine.class.getName());
-    private static final ExecutorService EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     private final AgentDefinition definition;
     private final ModelGateway model;
@@ -85,14 +70,16 @@ public final class AgentEngine {
     private final PermissionPolicy permissions;
     private final Approver approver;
     private final List<AgentHook> hooks;
+    private final List<ToolInterceptor> interceptors;
     private final ConversationRepository repository;
     private final ConversationCompactor compactor;
     private final Map<Class<?>, Object> services;
     private final int depth;
     /** 会话级工具状态（文件读取记录、todo 列表等），按会话 ID 隔离；同一会话的多次运行共用。 */
     private final Map<String, Map<String, Object>> toolState = new ConcurrentHashMap<>();
-    /** 审批串行化：多个工具同时需要审批时一个一个问，避免提示交错。 */
-    private final ReentrantLock approvalLock = new ReentrantLock();
+    /** 带退避重试的模型（装饰器）。model() 仍然返回原始模型。 */
+    private final ModelGateway retryingModel;
+    private final ToolExecutor toolExecutor;
 
     private AgentEngine(Builder b) {
         this.definition = b.definition;
@@ -102,10 +89,21 @@ public final class AgentEngine {
         this.permissions = b.permissions;
         this.approver = b.approver;
         this.hooks = List.copyOf(b.hooks);
+        this.interceptors = List.copyOf(b.interceptors);
         this.repository = b.repository;
         this.compactor = b.compactor;
         this.services = Map.copyOf(b.services);
         this.depth = b.depth;
+        EngineSettings s = definition.settings();
+        this.retryingModel = new RetryingModelGateway(model, s.maxRetries(), s.retryBaseDelay(), s.maxMalformedRetries());
+        // 工具调用的拦截器链：参数校验 → 权限与审批 → 使用者的拦截器 → 钩子 → 截断输出 →（末端）执行
+        List<ToolInterceptor> chain = new ArrayList<>();
+        chain.add(new ArgumentsInterceptor());
+        chain.add(new PermissionInterceptor(permissions, approver));
+        chain.addAll(interceptors);
+        chain.add(new HookInterceptor(hooks));
+        chain.add(new TruncateInterceptor());
+        this.toolExecutor = new ToolExecutor(tools, chain, s, services, depth);
     }
 
     public static Builder builder() {
@@ -121,6 +119,7 @@ public final class AgentEngine {
         b.permissions = permissions;
         b.approver = approver;
         b.hooks = new ArrayList<>(hooks);
+        b.interceptors = new ArrayList<>(interceptors);
         b.repository = repository;
         b.compactor = compactor;
         b.services = new LinkedHashMap<>(services);
@@ -150,6 +149,11 @@ public final class AgentEngine {
 
     public List<AgentHook> hooks() {
         return hooks;
+    }
+
+    /** 使用者加入的工具调用拦截器（不含内置的参数校验、权限、钩子、截断）。 */
+    public List<ToolInterceptor> interceptors() {
+        return interceptors;
     }
 
     public ConversationCompactor compactor() {
@@ -206,7 +210,7 @@ public final class AgentEngine {
      * 一次运行的全部状态（会话、监听器、取消/插话控制、累计用量）。
      * 每次 {@link #run} 新建一个，用完即弃 —— 所以引擎本身可以被多个会话同时使用。
      */
-    private final class Run {
+    private final class Run implements ToolExecutor.Scope {
         private final Conversation conversation;
         private final AgentEventListener listener;
         private final RunControl control;
@@ -221,7 +225,8 @@ public final class AgentEngine {
         }
 
         /** 发事件。工具并行执行时会从多个线程调用，加锁保证监听器看到的事件不交错；监听器出错不影响运行。 */
-        void emit(AgentEvent e) {
+        @Override
+        public void emit(AgentEvent e) {
             synchronized (emitLock) {
                 try {
                     listener.onEvent(e);
@@ -231,12 +236,29 @@ public final class AgentEngine {
             }
         }
 
-        synchronized void addUsage(TokenUsage u) {
+        @Override
+        public synchronized void addUsage(TokenUsage u) {
             usage = usage.plus(u);
         }
 
+        @Override
+        public Conversation conversation() {
+            return conversation;
+        }
+
+        @Override
+        public CancellationToken cancel() {
+            return control.token();
+        }
+
+        @Override
+        public Map<String, Object> toolState() {
+            return stateFor(conversation);
+        }
+
         /** 把聚合上新产生的领域事件写入仓储。每一步状态变化后都调用，进程随时崩溃也能从磁盘恢复。 */
-        void save() {
+        @Override
+        public void save() {
             if (repository != null) {
                 repository.save(conversation);
             }
@@ -282,11 +304,11 @@ public final class AgentEngine {
                     for (AgentHook h : hooks) {
                         request = h.beforeModel(request);
                     }
-                    // ⑥ 调模型（流式，增量实时转成事件）。可重试的错误在 callModel 里退避重试；
+                    // ⑥ 调模型（流式，增量实时转成事件）。可重试的错误由 RetryingModelGateway 退避重试；
                     //    请求本身超窗时压缩后重做本轮（turn-- 让这一轮不计数），最多 2 次
                     ModelResponse response;
                     try {
-                        response = callModel(request);
+                        response = retryingModel.stream(request, new StreamEventForwarder(this::emit), control.token());
                     } catch (ContextOverflowException e) {
                         if (overflowRetries++ >= 2) {
                             throw e;
@@ -336,8 +358,8 @@ public final class AgentEngine {
                         continue;
                     }
                     if (!calls.isEmpty()) {
-                        // ⑨ 执行工具，结果和运行中用户的插话放进同一条用户消息，然后进入下一轮
-                        List<ToolResult> results = executeTools(calls);
+                        // ⑨ 执行工具（ToolExecutor：分批并行 + 拦截器链），结果和运行中用户的插话放进同一条用户消息，然后进入下一轮
+                        List<ToolResult> results = toolExecutor.execute(calls, this);
                         List<ContentBlock> extra = control.drainSteering().stream().<ContentBlock>map(TextBlock::new).toList();
                         conversation.answerToolCalls(results, extra);
                         save();
@@ -386,310 +408,6 @@ public final class AgentEngine {
             }
         }
 
-        // ------------------------------------------------------------ 模型调用
-
-        /**
-         * 调一次模型，尽量让它成功：可重试错误（限流 / 5xx / 网络）按 2s × 2^n + 随机抖动退避重试；
-         * 输出无法解析时重发本轮；超窗交给调用方压缩。适配器负责把各家错误翻译成这几类异常。
-         */
-        private ModelResponse callModel(ModelRequest request) {
-            int malformed = 0;
-            int attempt = 0;
-            EngineSettings s = definition.settings();
-            // 适配器的流式回调 → 引擎事件（命令行、SSE 据此实时显示）
-            ModelStreamListener sl = new ModelStreamListener() {
-                @Override
-                public void onText(String delta) {
-                    emit(new AgentEvent.TextDelta(delta));
-                }
-
-                @Override
-                public void onThinking(String delta) {
-                    emit(new AgentEvent.ThinkingDelta(delta));
-                }
-
-                @Override
-                public void onToolCallStart(String id, String name) {
-                    emit(new AgentEvent.ToolCallStreaming(id, name));
-                }
-            };
-            while (true) {
-                control.token().throwIfCancelled();
-                try {
-                    return model.stream(request, sl, control.token());
-                } catch (CancelledException e) {
-                    throw e;
-                } catch (MalformedOutputException e) {
-                    if (++malformed > s.maxMalformedRetries()) {
-                        throw e;
-                    }
-                    emit(new AgentEvent.Notice("warning", "malformed model output, retrying the turn: " + e.getMessage()));
-                } catch (ContextOverflowException e) {
-                    throw e;
-                } catch (ModelException e) {
-                    if (control.isCancelled()) {
-                        throw new CancelledException();
-                    }
-                    if (!e.retryable() || attempt >= s.maxRetries()) {
-                        throw e;
-                    }
-                    long delay = s.retryBaseDelay().toMillis() * (1L << attempt) + ThreadLocalRandom.current().nextLong(0, 1000);
-                    attempt++;
-                    emit(new AgentEvent.Retrying(attempt, delay, Texts.clip(e.getMessage(), 300)));
-                    sleepCancellable(delay);
-                }
-            }
-        }
-
-        private void sleepCancellable(long millis) {
-            long end = System.currentTimeMillis() + millis;
-            while (System.currentTimeMillis() < end) {
-                control.token().throwIfCancelled();
-                try {
-                    Thread.sleep(Math.min(100, Math.max(1, end - System.currentTimeMillis())));
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new CancelledException();
-                }
-            }
-        }
-
-        // ------------------------------------------------------------ 工具执行
-
-        /**
-         * 连续的可并行工具一起并发执行，其余按顺序执行；结果保持调用顺序。
-         * 例：[read A, read B, write C, read D] → 批次 [A, B]（并行）、[C]、[D]，
-         * 保证 C 写之前 A、B 已读完，D 读到的是 C 写之后的内容。
-         */
-        private List<ToolResult> executeTools(List<ToolCall> calls) {
-            // 切分批次：只有"上一批也是可并行的"才并进去，所以批次只合并相邻的只读调用
-            List<List<ToolCall>> batches = new ArrayList<>();
-            List<Boolean> parallel = new ArrayList<>();
-            for (ToolCall c : calls) {
-                boolean safe = tools.find(c.name()).map(Tool::concurrencySafe).orElse(false);
-                if (safe && !batches.isEmpty() && parallel.get(parallel.size() - 1)) {
-                    batches.get(batches.size() - 1).add(c);
-                } else {
-                    batches.add(new ArrayList<>(List.of(c)));
-                    parallel.add(safe);
-                }
-            }
-            Map<String, ToolResult> results = new ConcurrentHashMap<>();
-            // 并行批次里同时运行的工具数上限（maxToolConcurrency，默认 8）
-            Semaphore permits = new Semaphore(Math.max(1, definition.settings().maxToolConcurrency()));
-            try {
-                for (int i = 0; i < batches.size(); i++) {
-                    control.token().throwIfCancelled();
-                    List<ToolCall> group = batches.get(i);
-                    if (parallel.get(i) && group.size() > 1) {
-                        List<Future<?>> futures = new ArrayList<>();
-                        for (ToolCall c : group) {
-                            futures.add(EXECUTOR.submit(() -> {
-                                permits.acquireUninterruptibly();
-                                try {
-                                    results.put(c.id(), runTool(c));
-                                } finally {
-                                    permits.release();
-                                }
-                                return null;
-                            }));
-                        }
-                        // 取消时中断所有还在跑的工具线程
-                        Runnable unregister = control.token().onCancel(() -> futures.forEach(f -> f.cancel(true)));
-                        try {
-                            for (Future<?> f : futures) {
-                                try {
-                                    f.get();
-                                } catch (ExecutionException e) {
-                                    if (e.getCause() instanceof CancelledException ce) {
-                                        throw ce;
-                                    }
-                                    throw new IllegalStateException(e.getCause());
-                                } catch (java.util.concurrent.CancellationException | InterruptedException e) {
-                                    throw new CancelledException();
-                                }
-                            }
-                        } finally {
-                            unregister.run();
-                        }
-                    } else {
-                        for (ToolCall c : group) {
-                            results.put(c.id(), runTool(c));
-                        }
-                    }
-                }
-            } catch (CancelledException e) {
-                // 取消时也要保证每个调用都有结果，历史才合法
-                List<ToolResult> filled = calls.stream().map(c -> results.getOrDefault(c.id(),
-                        ToolResult.text(c.id(), c.name(), "Cancelled by user.", true))).toList();
-                conversation.answerToolCalls(filled, List.of());
-                save();
-                throw e;
-            }
-            return calls.stream().map(c -> results.get(c.id())).toList();
-        }
-
-        /**
-         * 执行单个工具调用。任何一关没通过都不抛异常，而是返回一个错误结果交给模型，让它自己调整做法。
-         * 关卡顺序：1 工具存在 → 2 参数是 JSON → 3 符合 Schema → 4 权限策略 → 5 审批 → 6 beforeTool 钩子
-         * → 7 执行（超时 / 取消）→ 8 截断过长输出 → 9 afterTool 钩子。
-         */
-        private ToolResult runTool(ToolCall call) {
-            long t0 = System.nanoTime();
-            // 1. 工具存在
-            Optional<Tool> found = tools.find(call.name());
-            if (found.isEmpty()) {
-                return fail(call, t0, "Error: unknown tool '" + call.name() + "'. Available tools: " + String.join(", ", tools.names()));
-            }
-            Tool tool = found.get();
-            // 2. 参数是合法 JSON（适配器解析时已经记下 parseError）
-            if (call.parseError() != null) {
-                return fail(call, t0, "Error: invalid tool arguments: " + call.parseError()
-                        + ". Send a valid JSON object matching the schema.");
-            }
-            // 3. 符合工具的 JSON Schema；顺带做温和的类型转换（例如 "3" → 3），转换后的值才交给工具
-            SchemaValidator.Result vr = SchemaValidator.validate(call.arguments(), tool.inputSchema());
-            if (!vr.valid()) {
-                return fail(call, t0, "Error: invalid arguments for " + tool.name() + ":\n- "
-                        + String.join("\n- ", vr.errors().subList(0, Math.min(10, vr.errors().size()))));
-            }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> args = vr.value() instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
-
-            // 4. 权限策略（默认实现：deny > ask > allow > 模式默认值；可以整个替换成自己的实现）
-            PermissionPolicy.Verdict verdict = permissions.check(tool, args);
-            Decision decision = verdict.decision();
-            String reason = verdict.reason();
-            // 5. 需要询问：交给审批人；没有审批人（无人值守）时一律拒绝
-            if (decision == Decision.ASK) {
-                if (approver == null) {
-                    decision = Decision.DENY;
-                    reason = "this action requires user approval, but no approver is available (non-interactive run)";
-                } else {
-                    PermissionRequest req = new PermissionRequest(UUID.randomUUID().toString(), conversation.id().value(),
-                            tool.name(), args, tool.permissionSubject(args), tool.describe(args), reason);
-                    Approval approval;
-                    approvalLock.lock(); // 审批串行，避免多个提示交错
-                    try {
-                        control.token().throwIfCancelled();
-                        approval = approver.approve(req);
-                    } finally {
-                        approvalLock.unlock();
-                    }
-                    // 用户选了"总是允许"：交给策略记住（默认实现会生成一条 allow 规则，本进程内后续同类调用不再询问）
-                    if (approval.decision() == Decision.ALLOW && approval.remember()) {
-                        String remembered = permissions.remember(tool, args);
-                        reason = remembered != null ? "always allowed (" + remembered + ")" : "approved by user";
-                    } else if (approval.message() != null && !approval.message().isBlank()) {
-                        reason = approval.message();
-                    } else {
-                        reason = approval.decision() == Decision.ALLOW ? "approved by user" : "denied by user";
-                    }
-                    decision = approval.decision() == Decision.ALLOW ? Decision.ALLOW : Decision.DENY;
-                }
-                emit(new AgentEvent.PermissionDecided(call.id(), tool.name(), decision.name().toLowerCase(), reason));
-            }
-            if (decision == Decision.DENY) {
-                return fail(call, t0, "Permission denied: " + reason
-                        + ". Do not retry the same action; adjust your approach or ask the user.");
-            }
-
-            ToolContext ctx = new ToolContext(definition.settings().cwd(), conversation.id().value(), call.id(),
-                    stateFor(conversation), msg -> emit(new AgentEvent.ToolProgress(call.id(), msg)), control.token(),
-                    services, depth);
-            // 6. beforeTool 钩子：可以拦截（原因交给模型）或改写参数
-            for (AgentHook h : hooks) {
-                HookDecision hd = h.beforeTool(call, tool, args, ctx);
-                if (hd != null && hd.blocked()) {
-                    return fail(call, t0, "Blocked by policy hook: " + hd.message());
-                }
-                if (hd != null && hd.rewrittenArguments() != null) {
-                    args = hd.rewrittenArguments();
-                }
-            }
-
-            // 7. 执行。ToolException 是"模型可以自己修正的错误"；其他异常、超时也都变成错误结果；取消则向上抛
-            emit(new AgentEvent.ToolStarted(call, tool.describe(args)));
-            ToolOutput out;
-            try {
-                out = invoke(tool, args, ctx);
-                if (out == null) {
-                    out = ToolOutput.text("(no output)");
-                }
-            } catch (ToolException e) {
-                out = ToolOutput.error("Error: " + e.getMessage());
-            } catch (TimeoutException e) {
-                out = ToolOutput.error("Error: tool timed out after " + tool.timeout().toSeconds() + "s");
-            } catch (CancelledException e) {
-                throw e;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new CancelledException();
-            } catch (Exception e) {
-                if (control.isCancelled()) {
-                    throw new CancelledException();
-                }
-                LOG.log(System.Logger.Level.WARNING, "tool " + call.name() + " crashed", e);
-                out = ToolOutput.error("Error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-            }
-            // 8. 输出太长就截掉中间部分，防止一个工具结果撑爆上下文
-            out = truncate(out, tool.maxOutputChars());
-            // 9. afterTool 钩子：脱敏、改写输出
-            for (AgentHook h : hooks) {
-                ToolOutput o = h.afterTool(call, out, ctx);
-                if (o != null) {
-                    out = o;
-                }
-            }
-            // 子 Agent 等工具会把自己花掉的 token 放在 metadata.usage 里，计入本次运行和会话
-            Map<String, Object> meta = new LinkedHashMap<>(out.metadata());
-            if (meta.remove("usage") instanceof TokenUsage sub) {
-                addUsage(sub);
-                conversation.recordUsage(sub, "tool:" + tool.name());
-            }
-            emit(new AgentEvent.ToolFinished(call, out.text(), out.isError(), elapsed(t0), meta));
-            return new ToolResult(call.id(), call.name(), out.content(), out.isError());
-        }
-
-        /** 在虚拟线程上执行工具，这样才能对任何工具施加超时和取消（中断执行线程）。 */
-        private ToolOutput invoke(Tool tool, Map<String, Object> args, ToolContext ctx) throws Exception {
-            Future<ToolOutput> f = EXECUTOR.submit(() -> tool.execute(args, ctx));
-            Runnable unregister = ctx.cancel().onCancel(() -> f.cancel(true));
-            try {
-                Duration timeout = tool.timeout();
-                return timeout == null ? f.get() : f.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-            } catch (TimeoutException e) {
-                f.cancel(true);
-                throw e;
-            } catch (java.util.concurrent.CancellationException e) {
-                throw new CancelledException();
-            } catch (ExecutionException e) {
-                Throwable cause = e.getCause();
-                if (cause instanceof Exception ex) {
-                    throw ex;
-                }
-                throw new IllegalStateException(cause);
-            } finally {
-                unregister.run();
-            }
-        }
-
-        private ToolResult fail(ToolCall call, long t0, String message) {
-            emit(new AgentEvent.ToolFinished(call, message, true, elapsed(t0), Map.of()));
-            return ToolResult.text(call.id(), call.name(), message, true);
-        }
-
-        private long elapsed(long t0) {
-            return (System.nanoTime() - t0) / 1_000_000;
-        }
-
-        private ToolOutput truncate(ToolOutput out, int limit) {
-            List<ContentBlock> content = out.content().stream()
-                    .map(b -> b instanceof TextBlock t ? (ContentBlock) new TextBlock(Texts.truncateMiddle(t.text(), limit)) : b)
-                    .toList();
-            return out.withContent(content);
-        }
-
         // ------------------------------------------------------------ 压缩
 
         /**
@@ -729,6 +447,7 @@ public final class AgentEngine {
         private PermissionPolicy permissions = PermissionPolicy.defaults();
         private Approver approver;
         private List<AgentHook> hooks = new ArrayList<>();
+        private List<ToolInterceptor> interceptors = new ArrayList<>();
         private ConversationRepository repository;
         private ConversationCompactor compactor = new ConversationCompactor(null);
         private Map<Class<?>, Object> services = new LinkedHashMap<>();
@@ -772,6 +491,17 @@ public final class AgentEngine {
 
         public Builder hooks(List<AgentHook> h) {
             this.hooks = new ArrayList<>(h);
+            return this;
+        }
+
+        /** 加一个工具调用拦截器：排在参数校验、权限审批之后，钩子之前（见 {@link ToolInterceptor}）。 */
+        public Builder interceptor(ToolInterceptor i) {
+            this.interceptors.add(i);
+            return this;
+        }
+
+        public Builder interceptors(List<ToolInterceptor> list) {
+            this.interceptors = new ArrayList<>(list);
             return this;
         }
 

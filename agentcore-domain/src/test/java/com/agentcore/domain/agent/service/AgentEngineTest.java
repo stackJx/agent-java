@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.agentcore.domain.agent.event.AgentEvent;
 import com.agentcore.domain.agent.hook.AgentHook;
 import com.agentcore.domain.agent.hook.HookDecision;
+import com.agentcore.domain.agent.interceptor.ToolInterceptor;
 import com.agentcore.domain.agent.model.AgentDefinition;
 import com.agentcore.domain.agent.model.EngineSettings;
 import com.agentcore.domain.agent.model.RunControl;
@@ -153,6 +154,28 @@ class AgentEngineTest {
         assertTrue(c.messages().get(2).toolResults().get(0).text().contains("tenant policy forbids secret"));
         assertEquals(List.of("tenant policy requires approval", "tenant policy requires approval"), asked); // 第二次照样询问
         assertEquals("wrote b", c.messages().get(6).toolResults().get(0).text());
+    }
+
+    @Test
+    void customInterceptorRunsAfterPermissionAndCanBlock() {
+        // 使用者的拦截器：排在权限审批之后，看到的是已批准、已校验的调用；可以拦下，也可以记录
+        List<String> seen = new CopyOnWriteArrayList<>();
+        ToolInterceptor sandbox = (inv, chain) -> {
+            seen.add(inv.tool().name() + ":" + inv.arguments().get("name"));
+            if ("/etc/passwd".equals(inv.arguments().get("name"))) {
+                return ToolOutput.error("Blocked by sandbox: outside workspace");
+            }
+            return chain.proceed(inv);
+        };
+        FakeModel m = new FakeModel().then(reply("", call("write_thing", "name", "/etc/passwd")))
+                .then(reply("", call("write_thing", "name", "ok.txt"))).then(reply("done"));
+        Conversation c = Conversation.start();
+        AgentEngine e = engine(m, WRITE).approver(req -> Approval.allow()).interceptor(sandbox).build();
+        run(e, c, "go", new ArrayList<>());
+        assertEquals(List.of("write_thing:/etc/passwd", "write_thing:ok.txt"), seen);
+        assertEquals("Blocked by sandbox: outside workspace", c.messages().get(2).toolResults().get(0).text());
+        assertEquals("wrote ok.txt", c.messages().get(4).toolResults().get(0).text());
+        assertEquals(List.of(sandbox), e.toBuilder().build().interceptors(), "toBuilder（子 Agent）会带上拦截器");
     }
 
     @Test

@@ -111,7 +111,7 @@ flowchart TD
 
 ## 4. 调模型时的重试
 
-`Run#callModel` 负责把一次模型调用变得"尽量成功"：
+重试由装饰器 `RetryingModelGateway`（`domain/llm/gateway/`）负责：引擎创建时自动把模型包在它里面，把一次模型调用变得"尽量成功"。重试时它通过回调通知引擎，引擎转成 `Retrying` 事件：
 
 ```mermaid
 flowchart TD
@@ -129,7 +129,7 @@ flowchart TD
 
 ## 5. 工具怎么执行：分批 + 并行
 
-模型一次回复里可能要求调用多个工具。`Run#executeTools` 的规则：
+模型一次回复里可能要求调用多个工具，由 `ToolExecutor`（`domain/agent/service/`）执行，规则是：
 
 - **连续的**"可并行"工具（`Tool#concurrencySafe()`，默认等于只读）分成一批，在虚拟线程上并发执行；
 - 其余工具单独成批，按顺序执行；
