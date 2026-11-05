@@ -5,20 +5,22 @@ import static com.agentcore.infrastructure.llm.mock.ScriptedModelGateway.reply;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.agentcore.application.AgentService;
-import com.agentcore.domain.agent.AgentEngine;
-import com.agentcore.domain.agent.AgentHook;
-import com.agentcore.domain.agent.HookDecision;
-import com.agentcore.domain.agent.RunResult;
-import com.agentcore.domain.conversation.ConversationRepository;
-import com.agentcore.domain.conversation.ToolCall;
-import com.agentcore.domain.conversation.ToolResult;
-import com.agentcore.domain.model.ModelGateway;
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolContext;
-import com.agentcore.domain.tool.ToolOutput;
-import com.agentcore.domain.tool.ToolRegistry;
+import com.agentcore.domain.agent.hook.AgentHook;
+import com.agentcore.domain.agent.hook.HookDecision;
+import com.agentcore.domain.agent.model.RunResult;
+import com.agentcore.domain.agent.service.AgentEngine;
+import com.agentcore.domain.conversation.message.ToolCall;
+import com.agentcore.domain.conversation.message.ToolResult;
+import com.agentcore.domain.conversation.repository.ConversationRepository;
+import com.agentcore.domain.llm.gateway.ModelGateway;
+import com.agentcore.domain.permission.service.PermissionPolicy;
+import com.agentcore.domain.permission.service.RulePermissionPolicy;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolContext;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.model.ToolRegistry;
+import com.agentcore.domain.tool.schema.Schemas;
 import com.agentcore.infrastructure.llm.mock.ScriptedModelGateway;
 import com.agentcore.infrastructure.persistence.InMemoryConversationRepository;
 import com.agentcore.infrastructure.tool.annotation.AgentTool;
@@ -133,6 +135,14 @@ class AgentCoreAutoConfigurationTest {
                     assertThat(ctx.getBean(ToolRegistry.class).names()).containsExactly("read_file", "grep");
                     assertThat(ctx.getBean(ConversationRepository.class)).isInstanceOf(InMemoryConversationRepository.class);
                     assertThat(ctx.getBean(AgentEngine.class).definition().systemPrompt()).contains("用中文回答");
+                    assertThat(ctx.getBean(PermissionPolicy.class)).isInstanceOf(RulePermissionPolicy.class); // 默认：配置规则
                 });
+    }
+
+    @Test
+    void customPermissionPolicyReplacesRules() {
+        PermissionPolicy tenantPolicy = (tool, args) -> PermissionPolicy.Verdict.deny("tenant policy");
+        runner().withBean(PermissionPolicy.class, () -> tenantPolicy)
+                .run(ctx -> assertThat(ctx.getBean(AgentEngine.class).permissions()).isSameAs(tenantPolicy));
     }
 }

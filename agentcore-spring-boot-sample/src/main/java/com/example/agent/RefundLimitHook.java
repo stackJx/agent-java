@@ -1,10 +1,10 @@
 package com.example.agent;
 
-import com.agentcore.domain.agent.AgentHook;
-import com.agentcore.domain.agent.HookDecision;
-import com.agentcore.domain.conversation.ToolCall;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolContext;
+import com.agentcore.domain.agent.hook.AgentHook;
+import com.agentcore.domain.agent.hook.HookDecision;
+import com.agentcore.domain.conversation.message.ToolCall;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolContext;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 

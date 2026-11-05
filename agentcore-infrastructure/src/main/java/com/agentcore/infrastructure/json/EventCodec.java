@@ -1,6 +1,6 @@
 package com.agentcore.infrastructure.json;
 
-import com.agentcore.domain.agent.AgentEvent;
+import com.agentcore.domain.agent.event.AgentEvent;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /** AgentEvent → JSON（SSE / 日志 / --events 输出）。 */

@@ -1,12 +1,12 @@
 package com.agentcore.application.tool;
 
-import com.agentcore.domain.skill.Skill;
-import com.agentcore.domain.skill.SkillCatalog;
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolException;
-import com.agentcore.domain.tool.ToolOutput;
+import com.agentcore.domain.skill.model.Skill;
+import com.agentcore.domain.skill.repository.SkillCatalog;
+import com.agentcore.domain.tool.exception.ToolException;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.schema.Schemas;
 import java.util.stream.Collectors;
 
 /** load_skill：按需读取技能的完整说明。 */

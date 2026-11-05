@@ -1,9 +1,9 @@
 package com.agentcore.application.prompt;
 
-import com.agentcore.domain.memory.MemoryEntry;
-import com.agentcore.domain.memory.MemoryRepository;
-import com.agentcore.domain.skill.Skill;
-import com.agentcore.domain.skill.SkillCatalog;
+import com.agentcore.domain.memory.model.MemoryEntry;
+import com.agentcore.domain.memory.repository.MemoryRepository;
+import com.agentcore.domain.skill.model.Skill;
+import com.agentcore.domain.skill.repository.SkillCatalog;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;

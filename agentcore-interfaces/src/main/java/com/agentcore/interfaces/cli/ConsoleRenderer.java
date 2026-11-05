@@ -1,9 +1,9 @@
 package com.agentcore.interfaces.cli;
 
-import com.agentcore.domain.agent.AgentEvent;
-import com.agentcore.domain.agent.AgentEventListener;
-import com.agentcore.domain.conversation.TokenUsage;
-import com.agentcore.domain.shared.Texts;
+import com.agentcore.domain.agent.event.AgentEvent;
+import com.agentcore.domain.agent.event.AgentEventListener;
+import com.agentcore.domain.conversation.model.TokenUsage;
+import com.agentcore.domain.shared.util.Texts;
 import java.io.PrintStream;
 import java.util.List;
 

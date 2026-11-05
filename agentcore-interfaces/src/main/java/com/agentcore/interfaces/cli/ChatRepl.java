@@ -1,14 +1,14 @@
 package com.agentcore.interfaces.cli;
 
 import com.agentcore.application.AgentService;
-import com.agentcore.domain.agent.AgentEvent;
-import com.agentcore.domain.agent.RunResult;
-import com.agentcore.domain.conversation.Conversation;
-import com.agentcore.domain.conversation.ConversationSummary;
-import com.agentcore.domain.conversation.TokenUsage;
-import com.agentcore.domain.memory.MemoryEntry;
-import com.agentcore.domain.memory.MemoryRepository;
-import com.agentcore.domain.tool.Tool;
+import com.agentcore.domain.agent.event.AgentEvent;
+import com.agentcore.domain.agent.model.RunResult;
+import com.agentcore.domain.conversation.model.Conversation;
+import com.agentcore.domain.conversation.model.ConversationSummary;
+import com.agentcore.domain.conversation.model.TokenUsage;
+import com.agentcore.domain.memory.model.MemoryEntry;
+import com.agentcore.domain.memory.repository.MemoryRepository;
+import com.agentcore.domain.tool.model.Tool;
 import java.util.Map;
 import java.util.Optional;
 

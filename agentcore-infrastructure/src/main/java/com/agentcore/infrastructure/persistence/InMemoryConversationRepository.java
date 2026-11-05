@@ -1,9 +1,9 @@
 package com.agentcore.infrastructure.persistence;
 
-import com.agentcore.domain.conversation.Conversation;
-import com.agentcore.domain.conversation.ConversationId;
-import com.agentcore.domain.conversation.ConversationRepository;
-import com.agentcore.domain.conversation.ConversationSummary;
+import com.agentcore.domain.conversation.model.Conversation;
+import com.agentcore.domain.conversation.model.ConversationId;
+import com.agentcore.domain.conversation.model.ConversationSummary;
+import com.agentcore.domain.conversation.repository.ConversationRepository;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;

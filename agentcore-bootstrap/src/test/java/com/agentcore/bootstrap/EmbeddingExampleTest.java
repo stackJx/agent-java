@@ -2,7 +2,7 @@ package com.agentcore.bootstrap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.agentcore.domain.agent.RunResult;
+import com.agentcore.domain.agent.model.RunResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;

@@ -1,6 +1,6 @@
 package com.agentcore.infrastructure.tool.builtin;
 
-import com.agentcore.domain.tool.Tool;
+import com.agentcore.domain.tool.model.Tool;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

@@ -1,6 +1,6 @@
 package com.agentcore.infrastructure.llm;
 
-import com.agentcore.domain.model.ModelGateway;
+import com.agentcore.domain.llm.gateway.ModelGateway;
 import com.agentcore.infrastructure.llm.anthropic.AnthropicModelGateway;
 import com.agentcore.infrastructure.llm.mock.ScriptedModelGateway;
 import com.agentcore.infrastructure.llm.openai.OpenAiCompatibleModelGateway;

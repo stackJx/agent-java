@@ -6,20 +6,21 @@ import com.agentcore.application.subagent.SubAgentProfile;
 import com.agentcore.application.subagent.TaskTool;
 import com.agentcore.application.tool.MemoryTools;
 import com.agentcore.application.tool.SkillTool;
-import com.agentcore.domain.agent.AgentDefinition;
-import com.agentcore.domain.agent.AgentEngine;
-import com.agentcore.domain.agent.AgentHook;
-import com.agentcore.domain.agent.EngineSettings;
-import com.agentcore.domain.context.CompactionSettings;
-import com.agentcore.domain.context.ConversationCompactor;
-import com.agentcore.domain.conversation.ConversationRepository;
-import com.agentcore.domain.memory.MemoryRepository;
-import com.agentcore.domain.model.ModelGateway;
-import com.agentcore.domain.permission.Approver;
-import com.agentcore.domain.permission.PermissionPolicy;
-import com.agentcore.domain.skill.SkillCatalog;
-import com.agentcore.domain.tool.ToolRegistry;
-import com.agentcore.domain.tool.UserPrompter;
+import com.agentcore.domain.agent.hook.AgentHook;
+import com.agentcore.domain.agent.model.AgentDefinition;
+import com.agentcore.domain.agent.model.EngineSettings;
+import com.agentcore.domain.agent.service.AgentEngine;
+import com.agentcore.domain.context.model.CompactionSettings;
+import com.agentcore.domain.context.service.ConversationCompactor;
+import com.agentcore.domain.conversation.repository.ConversationRepository;
+import com.agentcore.domain.llm.gateway.ModelGateway;
+import com.agentcore.domain.memory.repository.MemoryRepository;
+import com.agentcore.domain.permission.gateway.Approver;
+import com.agentcore.domain.permission.service.PermissionPolicy;
+import com.agentcore.domain.permission.service.RulePermissionPolicy;
+import com.agentcore.domain.skill.repository.SkillCatalog;
+import com.agentcore.domain.tool.gateway.UserPrompter;
+import com.agentcore.domain.tool.model.ToolRegistry;
 import com.agentcore.infrastructure.llm.ModelGatewayFactory;
 import com.agentcore.infrastructure.mcp.McpServerManager;
 import com.agentcore.infrastructure.persistence.FileMemoryRepository;
@@ -127,7 +128,7 @@ public class AgentCoreAutoConfiguration {
     @ConditionalOnMissingBean
     public PermissionPolicy agentPermissionPolicy(AgentCoreProperties props) {
         AgentCoreProperties.Permissions p = props.getPermissions();
-        return PermissionPolicy.of(p.getMode(), p.getAllow(), p.getDeny(), p.getAsk());
+        return RulePermissionPolicy.of(p.getMode(), p.getAllow(), p.getDeny(), p.getAsk());
     }
 
     /** 子 Agent 工具（subagent-max-depth 为 0 或 tools 白名单不含 task 时不会注册进工具表）。 */

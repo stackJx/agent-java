@@ -1,6 +1,6 @@
 package com.example.agent;
 
-import com.agentcore.domain.tool.ToolException;
+import com.agentcore.domain.tool.exception.ToolException;
 import com.agentcore.infrastructure.tool.annotation.AgentTool;
 import com.agentcore.infrastructure.tool.annotation.Param;
 import java.util.Map;

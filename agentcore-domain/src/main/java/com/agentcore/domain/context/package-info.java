@@ -1,8 +1,6 @@
 /**
- * 上下文管理：估算 token 数，快满时压缩。
+ * 上下文管理：估算 token 数，快满时把旧对话总结成摘要，用"摘要 + 最新输入"开启新的上下文。
  *
- * <p>{@link com.agentcore.domain.context.ConversationCompactor} 不删旧消息，而是让模型把旧对话写成交接摘要，
- * 再用"摘要 + 最新用户输入"开启一段新对话：这样历史始终合法，提示缓存也能重新命中。
- * {@link com.agentcore.domain.context.TokenEstimator} 在没有真实用量时按字符数粗估。
+ * <p>子包：{@code model}、{@code service}（各子包的 package-info 有说明）。
  */
 package com.agentcore.domain.context;

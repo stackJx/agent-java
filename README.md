@@ -22,7 +22,7 @@
 
 ```bash
 cd agentcore-java
-mvn -q install                                   # 构建并运行 83 个测试，生成 agentcore-bootstrap/target/agentcore.jar
+mvn -q install                                   # 构建并运行 85 个测试，生成 agentcore-bootstrap/target/agentcore.jar
 
 export DEEPSEEK_API_KEY=sk-...                   # 或 ANTHROPIC_API_KEY=...
 bin/agentcore                                    # 交互式对话
@@ -65,11 +65,13 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
             │  agent         AgentEngine 领域服务（主循环）· AgentEvent · AgentHook        │
             │  tool          Tool · ToolRegistry · SchemaValidator                       │
             │  permission    PermissionPolicy · PermissionRule · Approver(端口)          │
-            │  model         ModelGateway(端口) · ModelRequest/Response                  │
+            │  llm           ModelGateway(端口) · ModelRequest/Response                  │
             │  context       ConversationCompactor · TokenEstimator                      │
             │  memory/skill  MemoryRepository(端口) · SkillCatalog(端口)                 │
             └────────────────────────────────────────────────────────────────────────┘
 ```
+
+领域层每个模块内部再按 DDD 构件类型分子包：`model`（聚合、值对象）、`event`、`service`（领域服务）、`repository`（存取数据的端口）、`gateway`（调用外部系统或人的端口）、`exception`，完整结构见 [docs/01 第 3 节](docs/01-architecture.md#3-领域层的包)。
 
 依赖方向由 Maven 模块强制：`domain ← application ← interfaces ← spring-boot-starter ← bootstrap`，`domain ← infrastructure`（基础设施只依赖领域、实现领域定义的端口）。**硬性规则只有一条：领域层不依赖任何框架**（import 只有 `java.*`），业务规则因此可以单独测试、换框架也不用动。外层统一用 Spring Boot：接口层是 Spring MVC 注解控制器，组装只有 starter 的自动装配这一套，独立部署版也是一个 Spring Boot 应用。应用层和基础设施层目前没用到 Spring，可以不借助容器手动组装（见下文"不用 Spring 手动组装"）。
 
@@ -145,13 +147,28 @@ AgentHook guard = new AgentHook() {
         return ToolOutput.text(out.text().replace(SECRET, "***"));      // 脱敏
     }
 };
-PermissionPolicy policy = PermissionPolicy.of("default",
+PermissionPolicy policy = RulePermissionPolicy.of("default",
         List.of("bash(git status*)", "bash(ls *)"),                    // allow
         List.of("bash(rm -rf *)", "write_file(/etc/*)"),               // deny
         List.of("web_fetch"));                                         // ask
 ```
 
 判定顺序：deny > ask > allow > 模式默认（只读工具允许，其余询问）。没有 Approver 时，需要询问的操作会被拒绝（适合无人值守）。对 bash，deny 命中任一子命令即拒绝；allow 要求每个子命令都被覆盖，且含 `$( )`、反引号、重定向时 allow 不生效。
+
+`PermissionPolicy` 是接口，上面用的 `RulePermissionPolicy` 是基于配置规则的默认实现。需要按租户、角色或对接公司权限系统判断时，自己实现它（只有一个方法，可以写成 lambda），Spring Boot 里定义一个 `PermissionPolicy` 类型的 Bean 就会替换掉默认实现：
+
+```java
+@Bean
+PermissionPolicy tenantPolicy(RbacClient rbac) {
+    PermissionPolicy rules = RulePermissionPolicy.of("default", List.of(), List.of("bash(rm -rf *)"), List.of());
+    return (tool, args) -> {
+        if (!rbac.canUse(CurrentUser.id(), tool.name())) {
+            return PermissionPolicy.Verdict.deny("当前用户没有 " + tool.name() + " 的权限");
+        }
+        return rules.check(tool, args);                                // 其余仍按配置规则判断
+    };
+}
+```
 
 ### 不用 Spring 手动组装
 
@@ -229,7 +246,7 @@ public class SupportFacade {
 | `ConversationRepository` | JSONL 文件；`agentcore.persistence.jdbc.enabled=true` 时存应用的数据源；`sessions.enabled=false` 时内存 | 其他存储（MongoDB / Redis …） |
 | `Approver` | Web 应用：SSE 推送审批（`AsyncApprover`）；非 Web：无（需审批的操作被拒绝） | 接审批流（钉钉 / 飞书 / 工单） |
 | `MemoryRepository` / `SkillCatalog` | 文件目录（开启 JDBC 存储时记忆也存数据库） | 配置中心等 |
-| `PermissionPolicy` | `agentcore.permissions.*` | 按租户动态生成 |
+| `PermissionPolicy`（接口） | `RulePermissionPolicy`：按 `agentcore.permissions.*` 规则判定 | 自己实现：按租户、角色或公司权限系统判断 |
 | `ToolRegistry` | 内置工具 + 记忆 + Skills + MCP + task + 容器里的 `Tool` / `@AgentTool` Bean | — |
 | `AgentEngine` / `AgentService` | 由以上组件组装 | — |
 | `AgentController`（接口层） | `{base-path}` 下的 REST + SSE 接口，独立部署版用的也是它；`agentcore.web.token` 开启 Bearer 鉴权 | `agentcore.web.enabled=false` 关闭后自己写 |
@@ -411,7 +428,7 @@ AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
 ## 测试
 
 ```bash
-mvn test        # 83 个测试，不需要任何 API Key
+mvn test        # 85 个测试，不需要任何 API Key
 ```
 
 | 模块 | 覆盖 |

@@ -1,10 +1,10 @@
 package com.agentcore.infrastructure.llm.openai;
 
-import com.agentcore.domain.conversation.ToolCall;
-import com.agentcore.domain.model.ContextOverflowException;
-import com.agentcore.domain.model.ModelException;
-import com.agentcore.domain.shared.CancellationToken;
-import com.agentcore.domain.shared.CancelledException;
+import com.agentcore.domain.conversation.message.ToolCall;
+import com.agentcore.domain.llm.exception.ContextOverflowException;
+import com.agentcore.domain.llm.exception.ModelException;
+import com.agentcore.domain.shared.cancel.CancellationToken;
+import com.agentcore.domain.shared.cancel.CancelledException;
 import com.agentcore.infrastructure.json.Json;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;

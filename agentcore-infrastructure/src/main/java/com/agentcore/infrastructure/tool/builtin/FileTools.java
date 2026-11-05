@@ -1,14 +1,14 @@
 package com.agentcore.infrastructure.tool.builtin;
 
-import com.agentcore.domain.conversation.ContentBlock;
-import com.agentcore.domain.conversation.ImageBlock;
-import com.agentcore.domain.conversation.TextBlock;
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolContext;
-import com.agentcore.domain.tool.ToolException;
-import com.agentcore.domain.tool.ToolOutput;
+import com.agentcore.domain.conversation.message.ContentBlock;
+import com.agentcore.domain.conversation.message.ImageBlock;
+import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.tool.exception.ToolException;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolContext;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.schema.Schemas;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.CodingErrorAction;

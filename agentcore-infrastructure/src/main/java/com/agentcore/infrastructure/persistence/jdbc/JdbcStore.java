@@ -1,6 +1,6 @@
 package com.agentcore.infrastructure.persistence.jdbc;
 
-import com.agentcore.domain.shared.ConcurrencyConflictException;
+import com.agentcore.domain.shared.exception.ConcurrencyConflictException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;

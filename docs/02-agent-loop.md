@@ -1,7 +1,7 @@
 # 02 Agent 主循环
 
 Agent 的核心只有一个循环：**把对话发给模型 → 模型要调用工具就执行工具，把结果加进对话 → 再发给模型 → ……直到模型给出最终答复。**
-这个循环在 `agentcore-domain/src/main/java/com/agentcore/domain/agent/AgentEngine.java` 的内部类 `Run` 里。
+这个循环在 `agentcore-domain/src/main/java/com/agentcore/domain/agent/service/AgentEngine.java` 的内部类 `Run` 里。
 
 ## 1. 一次运行的时序
 

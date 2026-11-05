@@ -1,11 +1,6 @@
 /**
- * 领域层通用基础类。
+ * 各模块共用的基础类型。
  *
- * <ul>
- *   <li>{@link com.agentcore.domain.shared.AggregateRoot}：聚合根基类，收集领域事件，仓储保存时用 {@code pullEvents()} 取走；</li>
- *   <li>{@link com.agentcore.domain.shared.DomainEvent}：领域事件接口；</li>
- *   <li>{@link com.agentcore.domain.shared.CancellationToken} / {@link com.agentcore.domain.shared.CancelledException}：协作式取消；</li>
- *   <li>{@link com.agentcore.domain.shared.DomainException}：违反业务规则时抛出（例如工具调用没有一一回复）。</li>
- * </ul>
+ * <p>子包：{@code model}、{@code exception}、{@code cancel}、{@code util}（各子包的 package-info 有说明）。
  */
 package com.agentcore.domain.shared;

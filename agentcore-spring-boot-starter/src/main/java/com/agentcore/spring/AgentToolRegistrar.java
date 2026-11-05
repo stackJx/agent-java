@@ -1,8 +1,8 @@
 package com.agentcore.spring;
 
 import com.agentcore.application.subagent.TaskTool;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolRegistry;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolRegistry;
 import com.agentcore.infrastructure.tool.annotation.AnnotatedTools;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.SmartInitializingSingleton;

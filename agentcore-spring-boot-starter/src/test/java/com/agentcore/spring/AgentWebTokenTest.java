@@ -2,7 +2,7 @@ package com.agentcore.spring;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.agentcore.domain.model.ModelGateway;
+import com.agentcore.domain.llm.gateway.ModelGateway;
 import com.agentcore.infrastructure.json.Json;
 import com.agentcore.infrastructure.llm.mock.ScriptedModelGateway;
 import java.net.URI;

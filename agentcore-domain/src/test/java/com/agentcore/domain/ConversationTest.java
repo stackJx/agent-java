@@ -2,15 +2,15 @@ package com.agentcore.domain;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.agentcore.domain.conversation.Conversation;
-import com.agentcore.domain.conversation.Message;
-import com.agentcore.domain.conversation.TextBlock;
-import com.agentcore.domain.conversation.TokenUsage;
-import com.agentcore.domain.conversation.ToolCall;
-import com.agentcore.domain.conversation.ToolResult;
 import com.agentcore.domain.conversation.event.ConversationStarted;
-import com.agentcore.domain.shared.DomainEvent;
-import com.agentcore.domain.shared.DomainException;
+import com.agentcore.domain.conversation.message.Message;
+import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.conversation.message.ToolCall;
+import com.agentcore.domain.conversation.message.ToolResult;
+import com.agentcore.domain.conversation.model.Conversation;
+import com.agentcore.domain.conversation.model.TokenUsage;
+import com.agentcore.domain.shared.exception.DomainException;
+import com.agentcore.domain.shared.model.DomainEvent;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;

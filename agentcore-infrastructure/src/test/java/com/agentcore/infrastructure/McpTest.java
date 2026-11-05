@@ -2,9 +2,9 @@ package com.agentcore.infrastructure;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.agentcore.domain.conversation.TextBlock;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolOutput;
+import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.infrastructure.json.Json;
 import com.agentcore.infrastructure.mcp.McpServerManager;
 import com.fasterxml.jackson.databind.JsonNode;

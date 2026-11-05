@@ -1,8 +1,8 @@
 package com.agentcore.infrastructure.persistence;
 
-import com.agentcore.domain.memory.MemoryEntry;
-import com.agentcore.domain.memory.MemoryRepository;
-import com.agentcore.domain.memory.MemoryType;
+import com.agentcore.domain.memory.model.MemoryEntry;
+import com.agentcore.domain.memory.model.MemoryType;
+import com.agentcore.domain.memory.repository.MemoryRepository;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;

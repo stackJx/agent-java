@@ -1,9 +1,9 @@
 package com.agentcore.interfaces.cli;
 
-import com.agentcore.domain.permission.Approval;
-import com.agentcore.domain.permission.Approver;
-import com.agentcore.domain.permission.PermissionRequest;
-import com.agentcore.domain.shared.Texts;
+import com.agentcore.domain.permission.gateway.Approver;
+import com.agentcore.domain.permission.model.Approval;
+import com.agentcore.domain.permission.model.PermissionRequest;
+import com.agentcore.domain.shared.util.Texts;
 import java.util.List;
 
 /** 命令行审批：[y]允许 / [a]总是允许 / [n]拒绝（也可直接输入拒绝理由，作为反馈交给模型）。 */

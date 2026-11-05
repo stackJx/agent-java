@@ -1,12 +1,12 @@
 package com.agentcore.infrastructure.mcp;
 
-import com.agentcore.domain.conversation.ContentBlock;
-import com.agentcore.domain.conversation.ImageBlock;
-import com.agentcore.domain.conversation.TextBlock;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolContext;
-import com.agentcore.domain.tool.ToolException;
-import com.agentcore.domain.tool.ToolOutput;
+import com.agentcore.domain.conversation.message.ContentBlock;
+import com.agentcore.domain.conversation.message.ImageBlock;
+import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.tool.exception.ToolException;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolContext;
+import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.infrastructure.json.Json;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;

@@ -2,7 +2,7 @@ package com.agentcore.spring.web;
 
 import com.agentcore.application.AgentService;
 import com.agentcore.application.approval.AsyncApprover;
-import com.agentcore.domain.permission.Approver;
+import com.agentcore.domain.permission.gateway.Approver;
 import com.agentcore.interfaces.web.AgentController;
 import com.agentcore.interfaces.web.BearerTokenInterceptor;
 import com.agentcore.spring.AgentCoreAutoConfiguration;

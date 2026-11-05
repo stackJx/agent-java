@@ -1,6 +1,6 @@
 package com.agentcore.interfaces.cli;
 
-import com.agentcore.domain.tool.UserPrompter;
+import com.agentcore.domain.tool.gateway.UserPrompter;
 import java.util.List;
 
 /** 命令行提问（ask_user 工具）。 */

@@ -9,20 +9,20 @@ import com.agentcore.application.prompt.SystemPromptBuilder;
 import com.agentcore.application.subagent.SubAgentProfile;
 import com.agentcore.application.subagent.TaskTool;
 import com.agentcore.application.tool.MemoryTools;
-import com.agentcore.domain.agent.AgentDefinition;
-import com.agentcore.domain.agent.AgentEngine;
-import com.agentcore.domain.agent.AgentEvent;
-import com.agentcore.domain.agent.EngineSettings;
-import com.agentcore.domain.agent.RunResult;
-import com.agentcore.domain.conversation.TextBlock;
-import com.agentcore.domain.conversation.ToolResult;
-import com.agentcore.domain.model.ModelRequest;
-import com.agentcore.domain.model.StopReason;
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolOutput;
-import com.agentcore.domain.tool.ToolRegistry;
+import com.agentcore.domain.agent.event.AgentEvent;
+import com.agentcore.domain.agent.model.AgentDefinition;
+import com.agentcore.domain.agent.model.EngineSettings;
+import com.agentcore.domain.agent.model.RunResult;
+import com.agentcore.domain.agent.service.AgentEngine;
+import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.conversation.message.ToolResult;
+import com.agentcore.domain.llm.model.ModelRequest;
+import com.agentcore.domain.llm.model.StopReason;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.model.ToolRegistry;
+import com.agentcore.domain.tool.schema.Schemas;
 import com.agentcore.infrastructure.llm.mock.ScriptedModelGateway;
 import com.agentcore.infrastructure.persistence.FileMemoryRepository;
 import com.agentcore.infrastructure.persistence.JsonlConversationRepository;
@@ -48,7 +48,7 @@ class ServiceAndSubAgentTest {
 
     @Test
     void subAgentsRunInParallelWithRestrictedToolsAndUsageRollsUp() {
-        java.util.function.Function<ModelRequest, com.agentcore.domain.model.ModelResponse> child = q -> {
+        java.util.function.Function<ModelRequest, com.agentcore.domain.llm.model.ModelResponse> child = q -> {
             List<String> names = q.tools().stream().map(t -> t.name()).toList();
             assertEquals(List.of("big_read"), names); // 白名单 + 禁止递归 task
             assertTrue(q.system().contains("Sub-agent mode"));

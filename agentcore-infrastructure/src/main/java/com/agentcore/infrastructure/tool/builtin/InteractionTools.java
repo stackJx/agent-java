@@ -1,12 +1,12 @@
 package com.agentcore.infrastructure.tool.builtin;
 
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.PermissionLevel;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolException;
-import com.agentcore.domain.tool.ToolOutput;
-import com.agentcore.domain.tool.UserPrompter;
+import com.agentcore.domain.tool.exception.ToolException;
+import com.agentcore.domain.tool.gateway.UserPrompter;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.PermissionLevel;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.schema.Schemas;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

@@ -1,13 +1,13 @@
 package com.agentcore.infrastructure.llm.openai;
 
-import com.agentcore.domain.conversation.ContentBlock;
-import com.agentcore.domain.conversation.ImageBlock;
-import com.agentcore.domain.conversation.Message;
-import com.agentcore.domain.conversation.Role;
-import com.agentcore.domain.conversation.TextBlock;
-import com.agentcore.domain.conversation.ThinkingBlock;
-import com.agentcore.domain.conversation.ToolCall;
-import com.agentcore.domain.conversation.ToolResult;
+import com.agentcore.domain.conversation.message.ContentBlock;
+import com.agentcore.domain.conversation.message.ImageBlock;
+import com.agentcore.domain.conversation.message.Message;
+import com.agentcore.domain.conversation.message.Role;
+import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.conversation.message.ThinkingBlock;
+import com.agentcore.domain.conversation.message.ToolCall;
+import com.agentcore.domain.conversation.message.ToolResult;
 import com.agentcore.infrastructure.json.Json;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;

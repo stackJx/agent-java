@@ -1,13 +1,13 @@
 package com.agentcore.bootstrap;
 
 import com.agentcore.application.AgentService;
-import com.agentcore.domain.agent.RunResult;
-import com.agentcore.domain.conversation.ConversationRepository;
-import com.agentcore.domain.conversation.ConversationSummary;
-import com.agentcore.domain.memory.MemoryRepository;
-import com.agentcore.domain.model.StopReason;
-import com.agentcore.domain.permission.Approver;
-import com.agentcore.domain.tool.UserPrompter;
+import com.agentcore.domain.agent.model.RunResult;
+import com.agentcore.domain.conversation.model.ConversationSummary;
+import com.agentcore.domain.conversation.repository.ConversationRepository;
+import com.agentcore.domain.llm.model.StopReason;
+import com.agentcore.domain.memory.repository.MemoryRepository;
+import com.agentcore.domain.permission.gateway.Approver;
+import com.agentcore.domain.tool.gateway.UserPrompter;
 import com.agentcore.infrastructure.json.EventCodec;
 import com.agentcore.infrastructure.json.Json;
 import com.agentcore.infrastructure.mcp.McpServerManager;

@@ -1,14 +1,14 @@
 package com.agentcore.application.tool;
 
-import com.agentcore.domain.memory.MemoryEntry;
-import com.agentcore.domain.memory.MemoryRepository;
-import com.agentcore.domain.memory.MemoryType;
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.PermissionLevel;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolException;
-import com.agentcore.domain.tool.ToolOutput;
+import com.agentcore.domain.memory.model.MemoryEntry;
+import com.agentcore.domain.memory.model.MemoryType;
+import com.agentcore.domain.memory.repository.MemoryRepository;
+import com.agentcore.domain.tool.exception.ToolException;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.PermissionLevel;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.schema.Schemas;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;

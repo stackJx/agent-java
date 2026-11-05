@@ -5,11 +5,11 @@ import static com.agentcore.infrastructure.llm.mock.ScriptedModelGateway.reply;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.agentcore.application.AgentService;
-import com.agentcore.domain.agent.AgentDefinition;
-import com.agentcore.domain.agent.AgentEngine;
-import com.agentcore.domain.agent.EngineSettings;
-import com.agentcore.domain.permission.PermissionPolicy;
-import com.agentcore.domain.tool.ToolRegistry;
+import com.agentcore.domain.agent.model.AgentDefinition;
+import com.agentcore.domain.agent.model.EngineSettings;
+import com.agentcore.domain.agent.service.AgentEngine;
+import com.agentcore.domain.permission.service.RulePermissionPolicy;
+import com.agentcore.domain.tool.model.ToolRegistry;
 import com.agentcore.infrastructure.llm.mock.ScriptedModelGateway;
 import com.agentcore.infrastructure.persistence.InMemoryConversationRepository;
 import com.agentcore.infrastructure.tool.builtin.BuiltinTools;
@@ -49,7 +49,7 @@ class ChatReplTest {
         AgentEngine engine = AgentEngine.builder()
                 .definition(new AgentDefinition("cli", "", EngineSettings.defaults(dir)))
                 .model(model).tools(new ToolRegistry(BuiltinTools.select(List.of("write_file", "bash"))))
-                .permissions(PermissionPolicy.of("default", List.of(), List.of("bash(rm -rf *)"), List.of()))
+                .permissions(RulePermissionPolicy.of("default", List.of(), List.of("bash(rm -rf *)"), List.of()))
                 .approver(new ConsoleApprover(io, ansi)).build();
         AgentService svc = new AgentService(engine, new InMemoryConversationRepository());
         String id = svc.startConversation(Map.of()).id().value();

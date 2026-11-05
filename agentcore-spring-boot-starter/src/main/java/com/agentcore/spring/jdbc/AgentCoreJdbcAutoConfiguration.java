@@ -1,7 +1,7 @@
 package com.agentcore.spring.jdbc;
 
-import com.agentcore.domain.conversation.ConversationRepository;
-import com.agentcore.domain.memory.MemoryRepository;
+import com.agentcore.domain.conversation.repository.ConversationRepository;
+import com.agentcore.domain.memory.repository.MemoryRepository;
 import com.agentcore.infrastructure.persistence.jdbc.JdbcConversationRepository;
 import com.agentcore.infrastructure.persistence.jdbc.JdbcMemoryRepository;
 import com.agentcore.infrastructure.persistence.jdbc.JdbcPlatform;

@@ -1,8 +1,8 @@
 package com.agentcore.application.approval;
 
-import com.agentcore.domain.permission.Approval;
-import com.agentcore.domain.permission.Approver;
-import com.agentcore.domain.permission.PermissionRequest;
+import com.agentcore.domain.permission.gateway.Approver;
+import com.agentcore.domain.permission.model.Approval;
+import com.agentcore.domain.permission.model.PermissionRequest;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;

@@ -54,11 +54,11 @@ flowchart LR
         ENGINE["AgentEngine<br/>主循环"]
         CONV["Conversation<br/>会话聚合"]
         POLICY["PermissionPolicy<br/>权限策略"]
-        P1(["ModelGateway 端口"])
-        P2(["ConversationRepository 端口"])
-        P3(["Approver 端口"])
-        P4(["Tool 端口"])
-        P5(["MemoryRepository / SkillCatalog 端口"])
+        P1(["ModelGateway 端口<br/>llm.gateway"])
+        P2(["ConversationRepository 端口<br/>conversation.repository"])
+        P3(["Approver 端口<br/>permission.gateway"])
+        P4(["Tool 端口<br/>tool.model"])
+        P5(["MemoryRepository / SkillCatalog 端口<br/>memory / skill.repository"])
     end
 
     subgraph OUT["被驱动方：Agent 用到的外部能力"]
@@ -104,16 +104,53 @@ flowchart LR
 
 ## 3. 领域层的包
 
-| 包 | 职责 | 核心类型 |
+领域层先按业务模块分包，每个模块里再按 DDD 构件类型分子包。新增代码时按"它是什么"放进对应的子包，以后扩展不用再调整结构：
+
+| 子包 | 放什么 | 例子 |
 |---|---|---|
-| `domain.agent` | Agent 主循环和它对外发出的事件 | `AgentEngine`、`AgentEvent`、`AgentHook`、`RunControl`、`RunResult` |
-| `domain.conversation` | 会话聚合、消息、内容块、领域事件 | `Conversation`、`Message`、`ContentBlock` 的各种实现、`event/*` |
-| `domain.model` | 和大模型对话的端口及请求、响应 | `ModelGateway`、`ModelRequest`、`ModelResponse`、`StopReason` |
-| `domain.tool` | 工具的定义、注册、参数校验 | `Tool`、`FunctionTool`、`ToolRegistry`、`SchemaValidator` |
-| `domain.permission` | 工具调用的权限判定和审批端口 | `PermissionPolicy`、`PermissionRule`、`Approver` |
-| `domain.context` | 上下文长度估算与压缩 | `ConversationCompactor`、`TokenEstimator` |
-| `domain.memory` / `domain.skill` | 长期记忆、技能的端口 | `MemoryRepository`、`SkillCatalog` |
-| `domain.shared` | 通用基础类 | `AggregateRoot`、`DomainEvent`、`CancellationToken` |
+| `model` | 聚合根、实体、值对象 | `conversation.model.Conversation`、`agent.model.RunResult` |
+| `event` | 事件 | `conversation.event.MessageAppended`、`agent.event.AgentEvent` |
+| `service` | 领域服务：无状态、跨多个对象的业务规则。默认直接写类，只有业务方会想换成自己规则的才抽接口 | `agent.service.AgentEngine`（类）、`permission.service.PermissionPolicy`（接口 + 默认实现） |
+| `repository` | 存取数据的端口，基础设施层实现 | `conversation.repository.ConversationRepository` |
+| `gateway` | 调用外部系统或人的端口，基础设施层或接口层实现 | `llm.gateway.ModelGateway`、`permission.gateway.Approver` |
+| `exception` | 本模块的异常 | `llm.exception.ContextOverflowException` |
+| 其他 | 按职责命名 | `conversation.message`（消息这一组值对象）、`tool.schema`、`agent.hook`、`shared.cancel` |
+
+完整结构（`com.agentcore.domain` 下）：
+
+```text
+agent            Agent 运行
+├── service      AgentEngine（主循环）
+├── model        AgentDefinition · EngineSettings · RunControl · RunResult
+├── event        AgentEvent · AgentEventListener
+└── hook         AgentHook · HookDecision
+conversation     会话
+├── model        Conversation（聚合根）· ConversationId · ConversationSummary · TokenUsage
+├── message      Message · Role · ProviderPayload · ContentBlock 及五种内容块
+├── event        ConversationStarted · MessageAppended · ConversationCompacted · UsageRecorded · MetadataUpdated
+└── repository   ConversationRepository
+context          上下文管理
+├── model        CompactionSettings
+└── service      ConversationCompactor · TokenEstimator
+llm              大模型
+├── model        ModelRequest · ModelResponse · StopReason · ToolSpec
+├── gateway      ModelGateway · ModelStreamListener
+└── exception    ModelException · ContextOverflowException · MalformedOutputException
+tool             工具
+├── model        Tool · FunctionTool · ToolContext · ToolOutput · ToolRegistry · PermissionLevel
+├── schema       Schemas · SchemaValidator
+├── gateway      UserPrompter
+└── exception    ToolException
+permission       权限与审批
+├── model        Approval · Decision · PermissionMode · PermissionRequest · PermissionRule
+├── service      PermissionPolicy（接口）· RulePermissionPolicy（默认实现，基于配置规则）
+└── gateway      Approver
+memory           长期记忆：model（MemoryEntry · MemoryType）· repository（MemoryRepository）
+skill            技能：model（Skill）· repository（SkillCatalog）
+shared           共用：model（AggregateRoot · DomainEvent）· exception · cancel（CancellationToken）· util
+```
+
+`ContentBlock` 是 sealed 接口，Java 要求它的五种实现和它放在同一个包里，所以都在 `conversation.message`。
 
 ## 4. 启动时怎么组装
 

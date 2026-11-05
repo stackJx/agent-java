@@ -1,6 +1,6 @@
 package com.agentcore.infrastructure.mcp;
 
-import com.agentcore.domain.tool.Tool;
+import com.agentcore.domain.tool.model.Tool;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.nio.file.Path;
 import java.util.ArrayList;

@@ -1,6 +1,6 @@
 # 03 会话聚合与事件溯源
 
-`Conversation`（`agentcore-domain/.../conversation/Conversation.java`）是整个项目里唯一的聚合根，代表一个会话。
+`Conversation`（`agentcore-domain/.../conversation/model/Conversation.java`）是整个项目里唯一的聚合根，代表一个会话。
 它要解决的问题只有一个：**不管发生什么（崩溃、取消、出错、并发），发给模型的历史都必须是合法的。**
 
 ## 1. 数据模型
@@ -153,7 +153,7 @@ sequenceDiagram
 
 读取时反过来：从存储里按顺序读出全部事件，`Conversation.replay(events)` 对每个事件调用同一个 `apply`，就还原出一模一样的会话。
 
-五种领域事件（`conversation/event/`）：
+五种领域事件（`conversation.event` 包）：
 
 | 事件 | 由哪个方法产生 | `apply` 时做什么 |
 |---|---|---|
@@ -182,7 +182,7 @@ sequenceDiagram
 
 ## 5. 上下文压缩
 
-对话越来越长，迟早会超过模型的上下文窗口。`ConversationCompactor`（`domain/context/`）的做法是：**把旧对话交给模型写一份交接摘要，然后用"摘要 + 最新一条用户输入"开启一段新的对话。**
+对话越来越长，迟早会超过模型的上下文窗口。`ConversationCompactor`（`domain/context/service/`）的做法是：**把旧对话交给模型写一份交接摘要，然后用"摘要 + 最新一条用户输入"开启一段新的对话。**
 
 ```mermaid
 flowchart LR

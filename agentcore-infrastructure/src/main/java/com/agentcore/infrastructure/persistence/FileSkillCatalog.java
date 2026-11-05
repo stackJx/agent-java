@@ -1,7 +1,7 @@
 package com.agentcore.infrastructure.persistence;
 
-import com.agentcore.domain.skill.Skill;
-import com.agentcore.domain.skill.SkillCatalog;
+import com.agentcore.domain.skill.model.Skill;
+import com.agentcore.domain.skill.repository.SkillCatalog;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;

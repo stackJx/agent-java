@@ -45,12 +45,12 @@
 **半天版：能改代码**
 
 1. 按上面 30 分钟版走一遍。
-2. 对照 [02](02-agent-loop.md) 读 `AgentEngine.java`（`agentcore-domain/.../agent/AgentEngine.java`），代码里的 ①②③ 编号和文档里的步骤一一对应。
+2. 对照 [02](02-agent-loop.md) 读 `AgentEngine.java`（`agentcore-domain/.../agent/service/AgentEngine.java`），代码里的 ①②③ 编号和文档里的步骤一一对应。
 3. 读 [03](03-conversation.md) 和 `Conversation.java`，理解"历史永远合法"这条规则。
 4. 在 IDE 里给 `AgentEngine.Run#execute` 打断点，运行 `AgentEngineTest`，单步走一遍。
 5. 需要哪块再看 04～07。
 
-**每个包都有 `package-info.java`**：在 IDE 里打开任意包，先看这个文件，它说明了这个包负责什么、核心类是哪几个、应该先读哪个。
+**每个包都有 `package-info.java`**：在 IDE 里打开任意包，先看这个文件，它说明了这个包负责什么、核心类是哪几个、应该先读哪个。领域层根包 `com.agentcore.domain` 的 package-info 写了分包约定。
 
 ## 术语表
 
@@ -60,7 +60,7 @@
 | 轮次（turn） | 调用一次模型算一轮。模型要求调用工具时，执行完工具会进入下一轮 | `AgentEvent.TurnStarted` |
 | 工具调用 / 工具结果 | 模型在回复里说"请帮我执行某工具，参数是……"；执行后把结果作为下一条消息发回给模型 | `ToolCall` / `ToolResult` |
 | 聚合根 | DDD 概念：一组必须一起保持一致的数据，外部只能通过它的方法修改。这里是一个会话 | `Conversation` |
-| 领域事件 | 聚合每发生一次变化就记一条事件（新消息、压缩、用量……），存储就是把事件按顺序追加 | `conversation/event/*` |
+| 领域事件 | 聚合每发生一次变化就记一条事件（新消息、压缩、用量……），存储就是把事件按顺序追加 | `conversation.event` 包 |
 | 端口（port） | 领域层定义的接口，说明"我需要什么能力"，不关心谁来实现 | `ModelGateway`、`ConversationRepository`、`Approver`…… |
 | 适配器（adapter） | 基础设施层对端口的具体实现，比如用 HTTP 调 OpenAI、用 JDBC 写数据库 | `infrastructure/*` |
 | 压缩（compaction） | 上下文快满时，把旧对话总结成一段摘要，用"摘要 + 最新消息"开启新的上下文 | `ConversationCompactor` |
@@ -74,7 +74,7 @@
 
 | 模块 | 作用 | 先读哪个文件 |
 |---|---|---|
-| `agentcore-domain` | 核心规则，零第三方依赖 | `agent/AgentEngine.java`、`conversation/Conversation.java` |
+| `agentcore-domain` | 核心规则，零第三方依赖 | `agent/service/AgentEngine.java`、`conversation/model/Conversation.java` |
 | `agentcore-application` | 用例编排 | `AgentService.java` |
 | `agentcore-infrastructure` | 模型、工具、存储等适配器 | `llm/ModelGatewayFactory.java` |
 | `agentcore-interfaces` | 命令行和 HTTP 接口（Spring MVC 注解控制器） | `web/AgentController.java`、`cli/ChatRepl.java` |

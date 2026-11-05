@@ -4,32 +4,32 @@ import static com.agentcore.domain.FakeModel.call;
 import static com.agentcore.domain.FakeModel.reply;
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.agentcore.domain.agent.AgentDefinition;
-import com.agentcore.domain.agent.AgentEngine;
-import com.agentcore.domain.agent.AgentEvent;
-import com.agentcore.domain.agent.AgentHook;
-import com.agentcore.domain.agent.EngineSettings;
-import com.agentcore.domain.agent.HookDecision;
-import com.agentcore.domain.agent.RunControl;
-import com.agentcore.domain.agent.RunResult;
-import com.agentcore.domain.context.CompactionSettings;
-import com.agentcore.domain.context.ConversationCompactor;
-import com.agentcore.domain.conversation.Conversation;
-import com.agentcore.domain.conversation.Message;
-import com.agentcore.domain.conversation.TextBlock;
-import com.agentcore.domain.conversation.ToolCall;
-import com.agentcore.domain.conversation.ToolResult;
-import com.agentcore.domain.model.MalformedOutputException;
-import com.agentcore.domain.model.ModelException;
-import com.agentcore.domain.model.StopReason;
-import com.agentcore.domain.permission.Approval;
-import com.agentcore.domain.permission.PermissionPolicy;
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolContext;
-import com.agentcore.domain.tool.ToolOutput;
-import com.agentcore.domain.tool.ToolRegistry;
+import com.agentcore.domain.agent.event.AgentEvent;
+import com.agentcore.domain.agent.hook.AgentHook;
+import com.agentcore.domain.agent.hook.HookDecision;
+import com.agentcore.domain.agent.model.AgentDefinition;
+import com.agentcore.domain.agent.model.EngineSettings;
+import com.agentcore.domain.agent.model.RunControl;
+import com.agentcore.domain.agent.model.RunResult;
+import com.agentcore.domain.agent.service.AgentEngine;
+import com.agentcore.domain.context.model.CompactionSettings;
+import com.agentcore.domain.context.service.ConversationCompactor;
+import com.agentcore.domain.conversation.message.Message;
+import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.conversation.message.ToolCall;
+import com.agentcore.domain.conversation.message.ToolResult;
+import com.agentcore.domain.conversation.model.Conversation;
+import com.agentcore.domain.llm.exception.MalformedOutputException;
+import com.agentcore.domain.llm.exception.ModelException;
+import com.agentcore.domain.llm.model.StopReason;
+import com.agentcore.domain.permission.model.Approval;
+import com.agentcore.domain.permission.service.PermissionPolicy;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolContext;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.model.ToolRegistry;
+import com.agentcore.domain.tool.schema.Schemas;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -132,6 +132,27 @@ class AgentEngineTest {
         run(e, c, "go", new ArrayList<>());
         assertEquals(List.of("write_thing"), asked);
         assertEquals("wrote b", c.messages().get(4).toolResults().get(0).text());
+    }
+
+    @Test
+    void customPolicyCanReplaceRules() {
+        // 自定义策略（例如对接公司的权限系统）：name=secret 直接拒绝，其他都要审批；没有实现 remember，"总是允许"不会被记住
+        PermissionPolicy policy = (tool, args) -> "secret".equals(args.get("name"))
+                ? PermissionPolicy.Verdict.deny("tenant policy forbids secret")
+                : PermissionPolicy.Verdict.ask("tenant policy requires approval");
+        List<String> asked = new CopyOnWriteArrayList<>();
+        FakeModel m = new FakeModel().then(reply("", call("write_thing", "name", "secret")))
+                .then(reply("", call("write_thing", "name", "a")))
+                .then(reply("", call("write_thing", "name", "b"))).then(reply("ok"));
+        Conversation c = Conversation.start();
+        AgentEngine e = engine(m, WRITE).permissions(policy).approver(req -> {
+            asked.add(req.reason());
+            return Approval.always();
+        }).build();
+        run(e, c, "go", new ArrayList<>());
+        assertTrue(c.messages().get(2).toolResults().get(0).text().contains("tenant policy forbids secret"));
+        assertEquals(List.of("tenant policy requires approval", "tenant policy requires approval"), asked); // 第二次照样询问
+        assertEquals("wrote b", c.messages().get(6).toolResults().get(0).text());
     }
 
     @Test

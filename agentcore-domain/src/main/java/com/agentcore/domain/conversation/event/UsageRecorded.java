@@ -1,8 +1,8 @@
 package com.agentcore.domain.conversation.event;
 
-import com.agentcore.domain.conversation.ConversationId;
-import com.agentcore.domain.conversation.TokenUsage;
-import com.agentcore.domain.shared.DomainEvent;
+import com.agentcore.domain.conversation.model.ConversationId;
+import com.agentcore.domain.conversation.model.TokenUsage;
+import com.agentcore.domain.shared.model.DomainEvent;
 import java.time.Instant;
 
 /** 不对应消息的额外用量（摘要请求、子 Agent 等）。 */

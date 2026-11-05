@@ -1,16 +1,16 @@
 package com.agentcore.application;
 
-import com.agentcore.domain.agent.AgentEngine;
-import com.agentcore.domain.agent.AgentEvent;
-import com.agentcore.domain.agent.AgentEventListener;
-import com.agentcore.domain.agent.RunControl;
-import com.agentcore.domain.agent.RunResult;
-import com.agentcore.domain.conversation.ContentBlock;
-import com.agentcore.domain.conversation.Conversation;
-import com.agentcore.domain.conversation.ConversationId;
-import com.agentcore.domain.conversation.ConversationRepository;
-import com.agentcore.domain.conversation.ConversationSummary;
-import com.agentcore.domain.conversation.TextBlock;
+import com.agentcore.domain.agent.event.AgentEvent;
+import com.agentcore.domain.agent.event.AgentEventListener;
+import com.agentcore.domain.agent.model.RunControl;
+import com.agentcore.domain.agent.model.RunResult;
+import com.agentcore.domain.agent.service.AgentEngine;
+import com.agentcore.domain.conversation.message.ContentBlock;
+import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.conversation.model.Conversation;
+import com.agentcore.domain.conversation.model.ConversationId;
+import com.agentcore.domain.conversation.model.ConversationSummary;
+import com.agentcore.domain.conversation.repository.ConversationRepository;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;

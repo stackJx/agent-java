@@ -1,8 +1,8 @@
 package com.agentcore.infrastructure.persistence.jdbc;
 
-import com.agentcore.domain.memory.MemoryEntry;
-import com.agentcore.domain.memory.MemoryRepository;
-import com.agentcore.domain.memory.MemoryType;
+import com.agentcore.domain.memory.model.MemoryEntry;
+import com.agentcore.domain.memory.model.MemoryType;
+import com.agentcore.domain.memory.repository.MemoryRepository;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;

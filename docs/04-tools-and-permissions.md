@@ -42,7 +42,7 @@ flowchart TD
 
 ## 2. 权限策略
 
-`PermissionPolicy`（`domain/permission/`）对每次调用给出三种结论之一：**允许（ALLOW）/ 拒绝（DENY）/ 询问（ASK）**。
+`PermissionPolicy`（`domain/permission/service/`）对每次调用给出三种结论之一：**允许（ALLOW）/ 拒绝（DENY）/ 询问（ASK）**。它是一个接口，默认实现 `RulePermissionPolicy` 按配置的规则判断，下面讲的判定顺序、模式、规则写法都是这个默认实现的行为；也可以整个换掉，见本节最后。
 
 ### 判定顺序
 
@@ -100,7 +100,25 @@ agentcore:
 
 所以 `bash(git status*)` 不会放行 `git status && rm -rf /`。
 
-用户在审批时选"总是允许"，`PermissionPolicy#remember` 会生成一条尽量具体的规则：bash 记成 `bash(第一个词 *)`，例如 `bash(npm *)`；其他工具记成整个工具名。只在当前进程里有效。
+用户在审批时选"总是允许"，`RulePermissionPolicy#remember` 会生成一条尽量具体的规则：bash 记成 `bash(第一个词 *)`，例如 `bash(npm *)`；其他工具记成整个工具名。只在当前进程里有效。
+
+### 换成自己的权限判断
+
+`PermissionPolicy` 接口只有一个必须实现的方法 `check(工具, 参数)`，返回允许 / 询问 / 拒绝和原因；`remember`（用户选"总是允许"时调用）有默认实现：不记住。
+
+```java
+PermissionPolicy rules = RulePermissionPolicy.of("default", List.of(), List.of("bash(rm -rf *)"), List.of());
+PermissionPolicy tenantPolicy = (tool, args) -> {
+    if (!rbac.canUse(CurrentUser.id(), tool.name())) {
+        return PermissionPolicy.Verdict.deny("当前用户没有 " + tool.name() + " 的权限");
+    }
+    return rules.check(tool, args);   // 其余仍按配置规则判断
+};
+```
+
+Spring Boot 里定义一个 `PermissionPolicy` 类型的 Bean 就会替换掉默认实现；手动组装时传给 `AgentEngine.builder().permissions(...)`。实现要线程安全，并行执行的工具会同时调用它。
+
+**和钩子怎么选**：`PermissionPolicy` 决定"这个工具能不能用、要不要问人"，结果可以是"询问"，会走审批流程；`AgentHook.beforeTool` 在审批之后、执行之前运行，适合按参数做业务拦截或改写参数。
 
 ## 3. 审批：谁来回答"可以吗"
 
@@ -168,7 +186,7 @@ public class RefundLimitHook implements AgentHook {
 
 ## 5. 定义工具的四种方式
 
-所有工具最后都是领域接口 `Tool`（`domain/tool/Tool.java`）的实现：
+所有工具最后都是领域接口 `Tool`（`domain/tool/model/Tool.java`）的实现：
 
 ```mermaid
 classDiagram

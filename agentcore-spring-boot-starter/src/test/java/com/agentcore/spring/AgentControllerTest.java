@@ -4,11 +4,11 @@ import static com.agentcore.infrastructure.llm.mock.ScriptedModelGateway.call;
 import static com.agentcore.infrastructure.llm.mock.ScriptedModelGateway.reply;
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.agentcore.domain.model.ModelGateway;
-import com.agentcore.domain.tool.FunctionTool;
-import com.agentcore.domain.tool.Schemas;
-import com.agentcore.domain.tool.Tool;
-import com.agentcore.domain.tool.ToolOutput;
+import com.agentcore.domain.llm.gateway.ModelGateway;
+import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolOutput;
+import com.agentcore.domain.tool.schema.Schemas;
 import com.agentcore.infrastructure.json.Json;
 import com.agentcore.infrastructure.llm.mock.ScriptedModelGateway;
 import com.fasterxml.jackson.databind.JsonNode;

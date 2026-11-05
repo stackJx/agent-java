@@ -3,10 +3,10 @@ package com.agentcore.spring;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.agentcore.application.AgentService;
-import com.agentcore.domain.conversation.ConversationRepository;
-import com.agentcore.domain.memory.MemoryEntry;
-import com.agentcore.domain.memory.MemoryRepository;
-import com.agentcore.domain.memory.MemoryType;
+import com.agentcore.domain.conversation.repository.ConversationRepository;
+import com.agentcore.domain.memory.model.MemoryEntry;
+import com.agentcore.domain.memory.model.MemoryType;
+import com.agentcore.domain.memory.repository.MemoryRepository;
 import com.agentcore.infrastructure.persistence.FileMemoryRepository;
 import com.agentcore.infrastructure.persistence.JsonlConversationRepository;
 import com.agentcore.infrastructure.persistence.jdbc.JdbcConversationRepository;
