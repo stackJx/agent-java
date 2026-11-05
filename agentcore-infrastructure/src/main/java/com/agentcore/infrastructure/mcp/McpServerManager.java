@@ -8,6 +8,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
@@ -19,6 +20,8 @@ import java.util.stream.Collectors;
 /** 按配置并发启动多个 MCP 服务器并收集工具。单个服务器失败不影响其他服务器（错误记录在 errors 里）。 */
 public final class McpServerManager implements AutoCloseable {
 
+    private static final int DEFAULT_STARTUP_TIMEOUT_SECONDS = 30;
+
     private final Map<String, Map<String, Object>> configs;
     private final Path cwd;
     private final Map<String, McpClient> clients = new ConcurrentHashMap<>();
@@ -28,22 +31,23 @@ public final class McpServerManager implements AutoCloseable {
     public McpServerManager(Map<String, Map<String, Object>> configs, Path cwd) {
         this.configs = new LinkedHashMap<>();
         if (configs != null) {
-            configs.forEach((k, v) -> {
-                if (!Boolean.FALSE.equals(v.get("enabled")) && !"false".equals(String.valueOf(v.get("enabled")))) {
-                    this.configs.put(k, v);
+            configs.forEach((name, config) -> {
+                if (!Boolean.FALSE.equals(config.get("enabled")) && !"false".equals(String.valueOf(config.get("enabled")))) {
+                    this.configs.put(name, config);
                 }
             });
         }
         this.cwd = cwd;
     }
 
+    /** 并行启动所有服务器；某个启动失败只记在 errors() 里，不影响其他服务器。返回全部工具（按名字排序）。 */
     public List<Tool> start() {
-        try (ExecutorService ex = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Future<?>> fs = new ArrayList<>();
-            configs.forEach((name, cfg) -> fs.add(ex.submit(() -> boot(name, cfg))));
-            for (Future<?> f : fs) {
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<?>> startups = new ArrayList<>();
+            configs.forEach((name, config) -> startups.add(executor.submit(() -> boot(name, config))));
+            for (Future<?> startup : startups) {
                 try {
-                    f.get();
+                    startup.get();
                 } catch (Exception ignored) {
                     // boot 内部已记录错误
                 }
@@ -54,27 +58,17 @@ public final class McpServerManager implements AutoCloseable {
         return sorted;
     }
 
-    private void boot(String name, Map<String, Object> cfg) {
+    /** 启动一个服务器（握手有超时）并取回工具列表；配置了 tools 白名单时只保留名单里的工具。 */
+    private void boot(String name, Map<String, Object> config) {
         McpClient client = null;
         try {
-            client = McpClient.fromConfig(name, cfg, cwd);
-            long startup = Long.parseLong(String.valueOf(cfg.getOrDefault("startup_timeout", 30)));
-            McpClient c = client;
-            java.util.concurrent.CompletableFuture<Void> init = new java.util.concurrent.CompletableFuture<>();
-            Thread.ofVirtual().name("mcp-init-" + name).start(() -> {
-                try {
-                    c.start();
-                    init.complete(null);
-                } catch (Throwable t) {
-                    init.completeExceptionally(t);
-                }
-            });
-            init.get(startup, TimeUnit.SECONDS);
-            List<JsonNode> specs = client.listTools();
-            List<?> allow = cfg.get("tools") instanceof List<?> l ? l : null;
-            for (JsonNode s : specs) {
-                if (allow == null || allow.contains(s.path("name").asText())) {
-                    tools.add(new McpTool(client, s));
+            client = McpClient.fromConfig(name, config, cwd);
+            long timeoutSeconds = Long.parseLong(String.valueOf(config.getOrDefault("startup_timeout", DEFAULT_STARTUP_TIMEOUT_SECONDS)));
+            startWithin(client, name, timeoutSeconds);
+            List<?> allowed = config.get("tools") instanceof List<?> list ? list : null;
+            for (JsonNode spec : client.listTools()) {
+                if (allowed == null || allowed.contains(spec.path("name").asText())) {
+                    tools.add(new McpTool(client, spec));
                 }
             }
             clients.put(name, client);
@@ -87,6 +81,20 @@ public final class McpServerManager implements AutoCloseable {
         }
     }
 
+    /** 握手放到单独的线程里，这样卡住的服务器也能按时放弃。 */
+    private static void startWithin(McpClient client, String name, long timeoutSeconds) throws Exception {
+        CompletableFuture<Void> started = new CompletableFuture<>();
+        Thread.ofVirtual().name("mcp-init-" + name).start(() -> {
+            try {
+                client.start();
+                started.complete(null);
+            } catch (Throwable failure) {
+                started.completeExceptionally(failure);
+            }
+        });
+        started.get(timeoutSeconds, TimeUnit.SECONDS);
+    }
+
     public Map<String, String> errors() {
         return Map.copyOf(errors);
     }
@@ -97,8 +105,8 @@ public final class McpServerManager implements AutoCloseable {
 
     public String promptSection() {
         String parts = clients.entrySet().stream().sorted(Map.Entry.comparingByKey())
-                .filter(e -> !e.getValue().instructions().isBlank())
-                .map(e -> "## " + e.getKey() + "\n" + e.getValue().instructions().strip())
+                .filter(entry -> !entry.getValue().instructions().isBlank())
+                .map(entry -> "## " + entry.getKey() + "\n" + entry.getValue().instructions().strip())
                 .collect(Collectors.joining("\n\n"));
         return parts.isEmpty() ? "" : "# MCP server instructions\n" + parts;
     }

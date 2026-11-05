@@ -28,11 +28,11 @@ public final class McpTool implements Tool {
         this.client = client;
         this.remoteName = spec.path("name").asText();
         this.name = ("mcp__" + client.name() + "__" + remoteName).replaceAll("[^a-zA-Z0-9_-]", "_");
-        String desc = spec.path("description").asText(spec.path("title").asText(remoteName));
-        this.description = "[MCP server: " + client.name() + "] " + desc;
-        Map<String, Object> s = new LinkedHashMap<>(Json.toMap(spec.path("inputSchema")));
-        s.putIfAbsent("type", "object");
-        this.schema = s;
+        String summary = spec.path("description").asText(spec.path("title").asText(remoteName));
+        this.description = "[MCP server: " + client.name() + "] " + summary;
+        Map<String, Object> inputSchema = new LinkedHashMap<>(Json.toMap(spec.path("inputSchema")));
+        inputSchema.putIfAbsent("type", "object");
+        this.schema = inputSchema;
         this.readOnly = spec.path("annotations").path("readOnlyHint").asBoolean(false);
     }
 
@@ -58,39 +58,40 @@ public final class McpTool implements Tool {
 
     @Override
     public ToolOutput execute(Map<String, Object> arguments, ToolContext context) throws Exception {
-        JsonNode res;
+        JsonNode result;
         try {
-            res = client.callTool(remoteName, arguments);
+            result = client.callTool(remoteName, arguments);
         } catch (McpException e) {
             throw new ToolException(e.getMessage());
         }
-        List<ContentBlock> blocks = convert(res.path("content"));
-        if (blocks.isEmpty() && res.hasNonNull("structuredContent")) {
-            blocks.add(new TextBlock(Json.pretty(res.get("structuredContent"))));
+        List<ContentBlock> blocks = convert(result.path("content"));
+        if (blocks.isEmpty() && result.hasNonNull("structuredContent")) {
+            blocks.add(new TextBlock(Json.pretty(result.get("structuredContent"))));
         }
         if (blocks.isEmpty()) {
             blocks.add(new TextBlock("(no output)"));
         }
-        return new ToolOutput(blocks, res.path("isError").asBoolean(false), Map.of());
+        return new ToolOutput(blocks, result.path("isError").asBoolean(false), Map.of());
     }
 
+    /** MCP 的内容条目 → 领域内容块：文字、图片直接对应；资源有文字就放文字；音频等暂不支持的给个占位。 */
     static List<ContentBlock> convert(JsonNode items) {
-        List<ContentBlock> out = new ArrayList<>();
-        for (JsonNode it : items) {
-            switch (it.path("type").asText()) {
-                case "text" -> out.add(new TextBlock(it.path("text").asText("")));
-                case "image" -> out.add(ImageBlock.base64(it.path("mimeType").asText("image/png"), it.path("data").asText("")));
+        List<ContentBlock> blocks = new ArrayList<>();
+        for (JsonNode item : items) {
+            switch (item.path("type").asText()) {
+                case "text" -> blocks.add(new TextBlock(item.path("text").asText("")));
+                case "image" -> blocks.add(ImageBlock.base64(item.path("mimeType").asText("image/png"), item.path("data").asText("")));
                 case "resource" -> {
-                    JsonNode r = it.path("resource");
-                    out.add(new TextBlock(r.hasNonNull("text") ? r.get("text").asText()
-                            : "(binary resource " + r.path("uri").asText() + ", " + r.path("mimeType").asText() + ")"));
+                    JsonNode resource = item.path("resource");
+                    blocks.add(new TextBlock(resource.hasNonNull("text") ? resource.get("text").asText()
+                            : "(binary resource " + resource.path("uri").asText() + ", " + resource.path("mimeType").asText() + ")"));
                 }
-                case "resource_link" -> out.add(new TextBlock(("Resource link: " + it.path("uri").asText() + " "
-                        + it.path("name").asText()).strip()));
-                case "audio" -> out.add(new TextBlock("(audio content omitted)"));
-                default -> out.add(new TextBlock(Json.write(it)));
+                case "resource_link" -> blocks.add(new TextBlock(("Resource link: " + item.path("uri").asText() + " "
+                        + item.path("name").asText()).strip()));
+                case "audio" -> blocks.add(new TextBlock("(audio content omitted)"));
+                default -> blocks.add(new TextBlock(Json.write(item)));
             }
         }
-        return out;
+        return blocks;
     }
 }

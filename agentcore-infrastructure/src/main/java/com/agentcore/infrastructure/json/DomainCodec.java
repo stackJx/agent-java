@@ -34,169 +34,169 @@ public final class DomainCodec {
 
     // ------------------------------------------------------------------ 内容块 / 消息
 
-    public static ObjectNode block(ContentBlock b) {
-        ObjectNode n = Json.object();
-        n.put("type", b.type());
-        switch (b) {
-            case TextBlock t -> n.put("text", t.text());
-            case ImageBlock i -> {
-                putIf(n, "media_type", i.mediaType());
-                putIf(n, "data", i.data());
-                putIf(n, "url", i.url());
+    public static ObjectNode block(ContentBlock block) {
+        ObjectNode json = Json.object();
+        json.put("type", block.type());
+        switch (block) {
+            case TextBlock text -> json.put("text", text.text());
+            case ImageBlock image -> {
+                putIf(json, "media_type", image.mediaType());
+                putIf(json, "data", image.data());
+                putIf(json, "url", image.url());
             }
-            case ThinkingBlock t -> {
-                putIf(n, "text", t.text());
-                putIf(n, "signature", t.signature());
-                if (t.redacted()) {
-                    n.put("redacted", true);
+            case ThinkingBlock thinking -> {
+                putIf(json, "text", thinking.text());
+                putIf(json, "signature", thinking.signature());
+                if (thinking.redacted()) {
+                    json.put("redacted", true);
                 }
-                putIf(n, "redacted_data", t.redactedData());
-                putIf(n, "provider", t.provider());
+                putIf(json, "redacted_data", thinking.redactedData());
+                putIf(json, "provider", thinking.provider());
             }
-            case ToolCall c -> {
-                n.put("id", c.id());
-                n.put("name", c.name());
-                n.set("arguments", Json.tree(c.arguments()));
-                putIf(n, "raw_arguments", c.rawArguments());
-                putIf(n, "parse_error", c.parseError());
+            case ToolCall call -> {
+                json.put("id", call.id());
+                json.put("name", call.name());
+                json.set("arguments", Json.tree(call.arguments()));
+                putIf(json, "raw_arguments", call.rawArguments());
+                putIf(json, "parse_error", call.parseError());
             }
-            case ToolResult r -> {
-                n.put("tool_call_id", r.toolCallId());
-                putIf(n, "tool_name", r.toolName());
-                ArrayNode arr = n.putArray("content");
-                r.content().forEach(x -> arr.add(block(x)));
-                n.put("is_error", r.isError());
+            case ToolResult result -> {
+                json.put("tool_call_id", result.toolCallId());
+                putIf(json, "tool_name", result.toolName());
+                ArrayNode content = json.putArray("content");
+                result.content().forEach(item -> content.add(block(item)));
+                json.put("is_error", result.isError());
             }
         }
-        return n;
+        return json;
     }
 
-    public static ContentBlock block(JsonNode n) {
-        String type = Json.text(n, "type");
+    public static ContentBlock block(JsonNode json) {
+        String type = Json.text(json, "type");
         return switch (type == null ? "" : type) {
-            case "text" -> new TextBlock(n.path("text").asText(""));
-            case "image" -> new ImageBlock(Json.text(n, "media_type"), Json.text(n, "data"), Json.text(n, "url"));
-            case "thinking" -> new ThinkingBlock(Json.text(n, "text"), Json.text(n, "signature"),
-                    n.path("redacted").asBoolean(false), Json.text(n, "redacted_data"), Json.text(n, "provider"));
-            case "tool_call" -> new ToolCall(n.path("id").asText(), n.path("name").asText(), Json.toMap(n.get("arguments")),
-                    Json.text(n, "raw_arguments"), Json.text(n, "parse_error"));
+            case "text" -> new TextBlock(json.path("text").asText(""));
+            case "image" -> new ImageBlock(Json.text(json, "media_type"), Json.text(json, "data"), Json.text(json, "url"));
+            case "thinking" -> new ThinkingBlock(Json.text(json, "text"), Json.text(json, "signature"),
+                    json.path("redacted").asBoolean(false), Json.text(json, "redacted_data"), Json.text(json, "provider"));
+            case "tool_call" -> new ToolCall(json.path("id").asText(), json.path("name").asText(), Json.toMap(json.get("arguments")),
+                    Json.text(json, "raw_arguments"), Json.text(json, "parse_error"));
             case "tool_result" -> {
                 List<ContentBlock> content = new ArrayList<>();
-                n.path("content").forEach(x -> content.add(block(x)));
-                yield new ToolResult(n.path("tool_call_id").asText(), Json.text(n, "tool_name"), content,
-                        n.path("is_error").asBoolean(false));
+                json.path("content").forEach(item -> content.add(block(item)));
+                yield new ToolResult(json.path("tool_call_id").asText(), Json.text(json, "tool_name"), content,
+                        json.path("is_error").asBoolean(false));
             }
             default -> throw new IllegalArgumentException("unknown block type: " + type);
         };
     }
 
-    public static ObjectNode message(Message m) {
-        ObjectNode n = Json.object();
-        n.put("role", m.role().wire());
-        ArrayNode arr = n.putArray("content");
-        m.content().forEach(b -> arr.add(block(b)));
-        if (m.providerPayload() != null) {
-            ProviderPayload p = m.providerPayload();
-            ObjectNode raw = n.putObject("provider_raw");
-            raw.put("provider", p.provider());
-            putIf(raw, "model", p.model());
-            raw.set("content", p.rawContentJson() == null ? Json.array() : Json.read(p.rawContentJson()));
+    public static ObjectNode message(Message message) {
+        ObjectNode json = Json.object();
+        json.put("role", message.role().wire());
+        ArrayNode content = json.putArray("content");
+        message.content().forEach(part -> content.add(block(part)));
+        if (message.providerPayload() != null) {
+            ProviderPayload payload = message.providerPayload();
+            ObjectNode raw = json.putObject("provider_raw");
+            raw.put("provider", payload.provider());
+            putIf(raw, "model", payload.model());
+            raw.set("content", payload.rawContentJson() == null ? Json.array() : Json.read(payload.rawContentJson()));
         }
-        return n;
+        return json;
     }
 
-    public static Message message(JsonNode n) {
-        Role role = Role.valueOf(n.path("role").asText("user").toUpperCase());
+    public static Message message(JsonNode json) {
+        Role role = Role.valueOf(json.path("role").asText("user").toUpperCase());
         List<ContentBlock> content = new ArrayList<>();
-        n.path("content").forEach(x -> content.add(block(x)));
+        json.path("content").forEach(item -> content.add(block(item)));
         ProviderPayload payload = null;
-        JsonNode raw = n.get("provider_raw");
+        JsonNode raw = json.get("provider_raw");
         if (raw != null && raw.isObject()) {
             payload = new ProviderPayload(raw.path("provider").asText(), Json.text(raw, "model"), Json.write(raw.path("content")));
         }
         return new Message(role, content, payload);
     }
 
-    public static ObjectNode usage(TokenUsage u) {
-        ObjectNode n = Json.object();
-        n.put("input_tokens", u.inputTokens());
-        n.put("output_tokens", u.outputTokens());
-        n.put("cache_read_tokens", u.cacheReadTokens());
-        n.put("cache_write_tokens", u.cacheWriteTokens());
-        n.put("requests", u.requests());
-        return n;
+    public static ObjectNode usage(TokenUsage usage) {
+        ObjectNode json = Json.object();
+        json.put("input_tokens", usage.inputTokens());
+        json.put("output_tokens", usage.outputTokens());
+        json.put("cache_read_tokens", usage.cacheReadTokens());
+        json.put("cache_write_tokens", usage.cacheWriteTokens());
+        json.put("requests", usage.requests());
+        return json;
     }
 
-    public static TokenUsage usage(JsonNode n) {
-        if (n == null || n.isNull()) {
+    public static TokenUsage usage(JsonNode json) {
+        if (json == null || json.isNull()) {
             return null;
         }
-        return new TokenUsage(n.path("input_tokens").asLong(), n.path("output_tokens").asLong(),
-                n.path("cache_read_tokens").asLong(), n.path("cache_write_tokens").asLong(), n.path("requests").asInt());
+        return new TokenUsage(json.path("input_tokens").asLong(), json.path("output_tokens").asLong(),
+                json.path("cache_read_tokens").asLong(), json.path("cache_write_tokens").asLong(), json.path("requests").asInt());
     }
 
     // ------------------------------------------------------------------ 领域事件（会话存储格式）
 
-    public static ObjectNode event(DomainEvent e) {
-        ObjectNode n = Json.object();
-        n.put("ts", e.occurredAt().toString());
-        switch (e) {
-            case ConversationStarted s -> {
-                n.put("t", "started");
-                n.put("id", s.conversationId().value());
-                n.set("metadata", Json.tree(s.metadata()));
+    public static ObjectNode event(DomainEvent event) {
+        ObjectNode json = Json.object();
+        json.put("ts", event.occurredAt().toString());
+        switch (event) {
+            case ConversationStarted started -> {
+                json.put("t", "started");
+                json.put("id", started.conversationId().value());
+                json.set("metadata", Json.tree(started.metadata()));
             }
-            case MessageAppended m -> {
-                n.put("t", "msg");
-                n.set("m", message(m.message()));
-                if (m.usage() != null) {
-                    n.set("usage", usage(m.usage()));
+            case MessageAppended appended -> {
+                json.put("t", "msg");
+                json.set("m", message(appended.message()));
+                if (appended.usage() != null) {
+                    json.set("usage", usage(appended.usage()));
                 }
             }
-            case ConversationCompacted c -> {
-                n.put("t", "compacted");
-                n.put("summary", c.summary());
-                ArrayNode arr = n.putArray("messages");
-                c.messages().forEach(m -> arr.add(message(m)));
+            case ConversationCompacted compacted -> {
+                json.put("t", "compacted");
+                json.put("summary", compacted.summary());
+                ArrayNode messages = json.putArray("messages");
+                compacted.messages().forEach(item -> messages.add(message(item)));
             }
-            case MetadataUpdated mu -> {
-                n.put("t", "meta");
-                n.put("key", mu.key());
-                n.put("value", mu.value());
+            case MetadataUpdated updated -> {
+                json.put("t", "meta");
+                json.put("key", updated.key());
+                json.put("value", updated.value());
             }
-            case UsageRecorded u -> {
-                n.put("t", "usage");
-                n.set("usage", usage(u.usage()));
-                n.put("reason", u.reason());
+            case UsageRecorded recorded -> {
+                json.put("t", "usage");
+                json.set("usage", usage(recorded.usage()));
+                json.put("reason", recorded.reason());
             }
-            default -> throw new IllegalArgumentException("unsupported event " + e.getClass());
+            default -> throw new IllegalArgumentException("unsupported event " + event.getClass());
         }
-        return n;
+        return json;
     }
 
-    public static DomainEvent event(JsonNode n, ConversationId id) {
-        Instant ts = n.hasNonNull("ts") ? Instant.parse(n.get("ts").asText()) : Instant.now();
-        return switch (n.path("t").asText()) {
+    public static DomainEvent event(JsonNode json, ConversationId id) {
+        Instant occurredAt = json.hasNonNull("ts") ? Instant.parse(json.get("ts").asText()) : Instant.now();
+        return switch (json.path("t").asText()) {
             case "started" -> {
-                Map<String, String> meta = new LinkedHashMap<>();
-                n.path("metadata").fields().forEachRemaining(f -> meta.put(f.getKey(), f.getValue().asText()));
-                yield new ConversationStarted(ConversationId.of(n.path("id").asText(id.value())), meta, ts);
+                Map<String, String> metadata = new LinkedHashMap<>();
+                json.path("metadata").fields().forEachRemaining(field -> metadata.put(field.getKey(), field.getValue().asText()));
+                yield new ConversationStarted(ConversationId.of(json.path("id").asText(id.value())), metadata, occurredAt);
             }
-            case "msg" -> new MessageAppended(id, message(n.get("m")), usage(n.get("usage")), ts);
+            case "msg" -> new MessageAppended(id, message(json.get("m")), usage(json.get("usage")), occurredAt);
             case "compacted" -> {
-                List<Message> msgs = new ArrayList<>();
-                n.path("messages").forEach(m -> msgs.add(message(m)));
-                yield new ConversationCompacted(id, n.path("summary").asText(), msgs, ts);
+                List<Message> messages = new ArrayList<>();
+                json.path("messages").forEach(item -> messages.add(message(item)));
+                yield new ConversationCompacted(id, json.path("summary").asText(), messages, occurredAt);
             }
-            case "usage" -> new UsageRecorded(id, usage(n.get("usage")), n.path("reason").asText(), ts);
-            case "meta" -> new MetadataUpdated(id, n.path("key").asText(), n.path("value").asText(), ts);
+            case "usage" -> new UsageRecorded(id, usage(json.get("usage")), json.path("reason").asText(), occurredAt);
+            case "meta" -> new MetadataUpdated(id, json.path("key").asText(), json.path("value").asText(), occurredAt);
             default -> null;
         };
     }
 
-    private static void putIf(ObjectNode n, String k, String v) {
-        if (v != null) {
-            n.put(k, v);
+    private static void putIf(ObjectNode json, String key, String value) {
+        if (value != null) {
+            json.put(key, value);
         }
     }
 }

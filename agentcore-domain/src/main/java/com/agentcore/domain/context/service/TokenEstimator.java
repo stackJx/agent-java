@@ -23,10 +23,10 @@ public final class TokenEstimator {
         return (long) ((text.length() - nonAscii) / 4.0 + nonAscii / 1.2) + 1;
     }
 
-    public static long estimate(Message m) {
+    public static long estimate(Message message) {
         long total = 4;
-        for (ContentBlock b : m.content()) {
-            total += estimate(b);
+        for (ContentBlock block : message.content()) {
+            total += estimate(block);
         }
         return total;
     }

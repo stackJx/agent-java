@@ -32,7 +32,7 @@ public final class ChatRepl {
     private final MemoryRepository memory;
     private final Map<String, String> warnings;
     private final ConsoleIO io;
-    private final Ansi a;
+    private final Ansi ansi;
     private final ConsoleRenderer renderer;
     private String conversationId;
 
@@ -46,34 +46,19 @@ public final class ChatRepl {
         this.memory = memory;
         this.warnings = warnings == null ? Map.of() : warnings;
         this.io = io;
-        this.a = ansi;
+        this.ansi = ansi;
         this.renderer = new ConsoleRenderer(io.out(), io.err(), ansi, showThinking);
         this.conversationId = conversationId;
     }
 
+    /** 读一条输入 → 斜杠命令就执行命令，否则交给 Agent 跑一次；直到 /exit 或输入结束（Ctrl+D）。 */
     public int run() {
-        Conversation c = service.find(conversationId).orElseThrow();
-        io.err().println(a.bold("agentcore · " + service.engine().model().describe() + " · 会话 " + conversationId));
-        warnings.forEach((k, v) -> io.err().println(a.yellow(k + "：" + v)));
-        if (c.size() > 0) {
-            io.err().println(a.dim("已恢复 " + c.size() + " 条历史消息：" + c.title()));
-        }
-        io.err().println(a.dim("输入 /help 查看命令"));
+        printBanner();
         while (true) {
-            String line = io.readLine(a.green("\n> "));
-            if (line == null) {
+            String text = readInput();
+            if (text == null) {
                 break;
             }
-            StringBuilder sb = new StringBuilder(line);
-            while (sb.toString().endsWith("\\")) {
-                sb.setLength(sb.length() - 1);
-                String more = io.readLine("… ");
-                if (more == null) {
-                    break;
-                }
-                sb.append('\n').append(more);
-            }
-            String text = sb.toString().strip();
             if (text.isEmpty()) {
                 continue;
             }
@@ -88,12 +73,41 @@ public final class ChatRepl {
         return 0;
     }
 
+    private void printBanner() {
+        Conversation conversation = service.find(conversationId).orElseThrow();
+        io.err().println(ansi.bold("agentcore · " + service.engine().model().describe() + " · 会话 " + conversationId));
+        warnings.forEach((source, problem) -> io.err().println(ansi.yellow(source + "：" + problem)));
+        if (conversation.size() > 0) {
+            io.err().println(ansi.dim("已恢复 " + conversation.size() + " 条历史消息：" + conversation.title()));
+        }
+        io.err().println(ansi.dim("输入 /help 查看命令"));
+    }
+
+    /** 读一条输入，行尾的 \ 表示续行。输入结束返回 null。 */
+    private String readInput() {
+        String line = io.readLine(ansi.green("\n> "));
+        if (line == null) {
+            return null;
+        }
+        StringBuilder input = new StringBuilder(line);
+        while (input.toString().endsWith("\\")) {
+            input.setLength(input.length() - 1);
+            String more = io.readLine("… ");
+            if (more == null) {
+                break;
+            }
+            input.append('\n').append(more);
+        }
+        return input.toString().strip();
+    }
+
+    /** 跑一次；运行期间 Ctrl+C 只取消当前任务，不退出程序。 */
     private void runOnce(String text) {
         Object previous = SignalHandling.onInterrupt(() -> service.cancel(conversationId));
         try {
-            RunResult r = service.chat(conversationId, text, renderer);
-            if (r.error() != null) {
-                io.err().println(a.red("运行失败：" + r.error()));
+            RunResult result = service.chat(conversationId, text, renderer);
+            if (result.error() != null) {
+                io.err().println(ansi.red("运行失败：" + result.error()));
             }
         } finally {
             SignalHandling.restore(previous);
@@ -103,57 +117,71 @@ public final class ChatRepl {
     /** 返回 false 表示退出。 */
     private boolean command(String text) {
         String[] parts = text.split("\\s+", 2);
-        String cmd = parts[0];
-        String arg = parts.length > 1 ? parts[1].strip() : "";
-        switch (cmd) {
+        String name = parts[0];
+        String argument = parts.length > 1 ? parts[1].strip() : "";
+        switch (name) {
             case "/exit", "/quit" -> {
                 return false;
             }
             case "/help" -> io.err().println(HELP);
             case "/new", "/clear" -> {
                 conversationId = service.startConversation(Map.of()).id().value();
-                io.err().println(a.dim("新会话 " + conversationId));
+                io.err().println(ansi.dim("新会话 " + conversationId));
             }
-            case "/compact" -> {
-                Optional<AgentEvent.Compacted> c = service.compact(conversationId);
-                io.err().println(a.dim(c.map(x -> "已压缩：~" + ConsoleRenderer.tokens(x.tokensBefore()) + " → ~"
-                        + ConsoleRenderer.tokens(x.tokensAfter())).orElse("无需压缩")));
-            }
-            case "/tools" -> {
-                for (Tool t : service.engine().tools()) {
-                    String first = t.description().lines().findFirst().orElse("");
-                    io.err().printf("  %-32s %s  %s%n", t.name(), t.readOnly() ? "只读" : "    ",
-                            first.length() > 70 ? first.substring(0, 70) : first);
-                }
-            }
-            case "/usage" -> {
-                TokenUsage u = service.find(conversationId).map(Conversation::usage).orElse(TokenUsage.ZERO);
-                io.err().println("  请求 " + u.requests() + " 次 · 输入 " + ConsoleRenderer.tokens(u.totalInput()) + "（缓存命中 "
-                        + ConsoleRenderer.tokens(u.cacheReadTokens()) + "） · 输出 " + ConsoleRenderer.tokens(u.outputTokens())
-                        + " · 当前上下文约 " + ConsoleRenderer.tokens(service.estimateContextTokens(conversationId)));
-            }
-            case "/sessions" -> {
-                for (ConversationSummary s : service.list(20)) {
-                    io.err().printf("  %s  %4d 条  %s%n", s.id(), s.messageCount(), s.title());
-                }
-            }
-            case "/resume" -> {
-                if (arg.isEmpty() || service.find(arg).isEmpty()) {
-                    io.err().println(a.yellow("找不到会话 " + arg));
-                } else {
-                    conversationId = arg;
-                    io.err().println(a.dim("已切换到会话 " + arg + "（" + service.find(arg).get().size() + " 条消息）"));
-                }
-            }
-            case "/memory" -> {
-                if (memory != null) {
-                    for (MemoryEntry m : memory.list()) {
-                        io.err().println("  " + m.name() + " [" + m.type().wire() + "] " + m.description());
-                    }
-                }
-            }
-            default -> io.err().println(a.yellow("未知命令 " + cmd + "，输入 /help 查看"));
+            case "/compact" -> compactNow();
+            case "/tools" -> listTools();
+            case "/usage" -> printUsage();
+            case "/sessions" -> listSessions();
+            case "/resume" -> resume(argument);
+            case "/memory" -> listMemories();
+            default -> io.err().println(ansi.yellow("未知命令 " + name + "，输入 /help 查看"));
         }
         return true;
+    }
+
+    private void compactNow() {
+        Optional<AgentEvent.Compacted> compacted = service.compact(conversationId);
+        io.err().println(ansi.dim(compacted.map(event -> "已压缩：~" + ConsoleRenderer.tokens(event.tokensBefore()) + " → ~"
+                + ConsoleRenderer.tokens(event.tokensAfter())).orElse("无需压缩")));
+    }
+
+    private void listTools() {
+        for (Tool tool : service.engine().tools()) {
+            String firstLine = tool.description().lines().findFirst().orElse("");
+            io.err().printf("  %-32s %s  %s%n", tool.name(), tool.readOnly() ? "只读" : "    ",
+                    firstLine.length() > 70 ? firstLine.substring(0, 70) : firstLine);
+        }
+    }
+
+    private void printUsage() {
+        TokenUsage usage = service.find(conversationId).map(Conversation::usage).orElse(TokenUsage.ZERO);
+        io.err().println("  请求 " + usage.requests() + " 次 · 输入 " + ConsoleRenderer.tokens(usage.totalInput()) + "（缓存命中 "
+                + ConsoleRenderer.tokens(usage.cacheReadTokens()) + "） · 输出 " + ConsoleRenderer.tokens(usage.outputTokens())
+                + " · 当前上下文约 " + ConsoleRenderer.tokens(service.estimateContextTokens(conversationId)));
+    }
+
+    private void listSessions() {
+        for (ConversationSummary summary : service.list(20)) {
+            io.err().printf("  %s  %4d 条  %s%n", summary.id(), summary.messageCount(), summary.title());
+        }
+    }
+
+    private void resume(String id) {
+        Optional<Conversation> target = id.isEmpty() ? Optional.empty() : service.find(id);
+        if (target.isEmpty()) {
+            io.err().println(ansi.yellow("找不到会话 " + id));
+            return;
+        }
+        conversationId = id;
+        io.err().println(ansi.dim("已切换到会话 " + id + "（" + target.get().size() + " 条消息）"));
+    }
+
+    private void listMemories() {
+        if (memory == null) {
+            return;
+        }
+        for (MemoryEntry entry : memory.list()) {
+            io.err().println("  " + entry.name() + " [" + entry.type().wire() + "] " + entry.description());
+        }
     }
 }

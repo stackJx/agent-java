@@ -35,23 +35,23 @@ public record JdbcStore(DataSource dataSource, JdbcPlatform platform, String tab
 
     @FunctionalInterface
     public interface Work<T> {
-        T run(Connection c) throws SQLException;
+        T run(Connection conn) throws SQLException;
     }
 
     /** 在一个事务里执行；失败回滚。 */
     public <T> T inTransaction(Work<T> work) {
-        try (Connection c = dataSource.getConnection()) {
-            boolean auto = c.getAutoCommit();
-            c.setAutoCommit(false);
+        try (Connection conn = dataSource.getConnection()) {
+            boolean autoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
             try {
-                T result = work.run(c);
-                c.commit();
+                T result = work.run(conn);
+                conn.commit();
                 return result;
             } catch (SQLException | RuntimeException e) {
-                c.rollback();
+                conn.rollback();
                 throw e;
             } finally {
-                c.setAutoCommit(auto);
+                conn.setAutoCommit(autoCommit);
             }
         } catch (SQLException e) {
             throw translate(e);
@@ -60,22 +60,22 @@ public record JdbcStore(DataSource dataSource, JdbcPlatform platform, String tab
 
     /** 只读查询（自动提交模式）。 */
     public <T> T query(Work<T> work) {
-        try (Connection c = dataSource.getConnection()) {
-            return work.run(c);
+        try (Connection conn = dataSource.getConnection()) {
+            return work.run(conn);
         } catch (SQLException e) {
             throw translate(e);
         }
     }
 
     static boolean isIntegrityViolation(SQLException e) {
-        for (Throwable t = e; t != null; t = t.getCause()) {
-            if (t instanceof SQLIntegrityConstraintViolationException) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLIntegrityConstraintViolationException) {
                 return true;
             }
-            if (t instanceof SQLException se && se.getSQLState() != null && se.getSQLState().startsWith("23")) {
+            if (cause instanceof SQLException se && se.getSQLState() != null && se.getSQLState().startsWith("23")) {
                 return true;
             }
-            if (t instanceof SQLException se && se.getMessage() != null && se.getMessage().contains("SQLITE_CONSTRAINT")) {
+            if (cause instanceof SQLException se && se.getMessage() != null && se.getMessage().contains("SQLITE_CONSTRAINT")) {
                 return true; // SQLite 驱动不填 SQLState
             }
         }

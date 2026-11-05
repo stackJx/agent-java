@@ -7,7 +7,6 @@ import com.agentcore.domain.conversation.repository.ConversationRepository;
 import com.agentcore.domain.shared.model.DomainEvent;
 import com.agentcore.infrastructure.json.DomainCodec;
 import com.agentcore.infrastructure.json.Json;
-import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -47,21 +46,21 @@ public final class JsonlConversationRepository implements ConversationRepository
     }
 
     @Override
-    public synchronized void save(Conversation c) {
-        List<DomainEvent> events = c.pullEvents();
-        identityMap.put(c.id(), c);
+    public synchronized void save(Conversation conversation) {
+        List<DomainEvent> events = conversation.pullEvents();
+        identityMap.put(conversation.id(), conversation);
         if (events.isEmpty()) {
             return;
         }
-        StringBuilder sb = new StringBuilder();
-        for (DomainEvent e : events) {
-            sb.append(Json.write(DomainCodec.event(e))).append('\n');
+        StringBuilder lines = new StringBuilder();
+        for (DomainEvent event : events) {
+            lines.append(Json.write(DomainCodec.event(event))).append('\n');
         }
         try {
             Files.createDirectories(root);
-            Files.writeString(file(c.id()), sb, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            Files.writeString(file(conversation.id()), lines, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
-            throw new UncheckedIOException("failed to persist conversation " + c.id(), e);
+            throw new UncheckedIOException("failed to persist conversation " + conversation.id(), e);
         }
     }
 
@@ -71,30 +70,30 @@ public final class JsonlConversationRepository implements ConversationRepository
         if (cached != null) {
             return Optional.of(cached);
         }
-        Path f = file(id);
-        if (!Files.exists(f)) {
+        Path path = file(id);
+        if (!Files.exists(path)) {
             return Optional.empty();
         }
-        Conversation c = load(f, id);
-        Conversation prev = identityMap.putIfAbsent(id, c);
-        return Optional.of(prev != null ? prev : c);
+        Conversation loaded = load(path, id);
+        Conversation raced = identityMap.putIfAbsent(id, loaded); // 别的线程刚加载过就用它的
+        return Optional.of(raced != null ? raced : loaded);
     }
 
-    private Conversation load(Path f, ConversationId id) {
+    /** 逐行读事件重放；坏行（例如写到一半时进程被杀）跳过，不影响其余历史。 */
+    private Conversation load(Path path, ConversationId id) {
         List<DomainEvent> events = new ArrayList<>();
-        try (Stream<String> lines = Files.lines(f)) {
+        try (Stream<String> lines = Files.lines(path)) {
             lines.forEach(line -> {
                 if (line.isBlank()) {
                     return;
                 }
                 try {
-                    JsonNode n = Json.read(line);
-                    DomainEvent e = DomainCodec.event(n, id);
-                    if (e != null) {
-                        events.add(e);
+                    DomainEvent event = DomainCodec.event(Json.read(line), id);
+                    if (event != null) {
+                        events.add(event);
                     }
-                } catch (RuntimeException ex) {
-                    LOG.log(System.Logger.Level.WARNING, "skipping corrupt line in " + f);
+                } catch (RuntimeException corrupt) {
+                    LOG.log(System.Logger.Level.WARNING, "skipping corrupt line in " + path);
                 }
             });
         } catch (IOException e) {
@@ -105,43 +104,44 @@ public final class JsonlConversationRepository implements ConversationRepository
 
     @Override
     public Optional<Conversation> findLatest() {
-        return files().stream().findFirst().map(f -> idOf(f)).flatMap(this::findById);
+        return files().stream().findFirst().map(JsonlConversationRepository::idOf).flatMap(this::findById);
     }
 
     @Override
     public List<ConversationSummary> list(int limit) {
-        List<ConversationSummary> out = new ArrayList<>();
-        for (Path f : files().stream().limit(limit).toList()) {
+        List<ConversationSummary> summaries = new ArrayList<>();
+        for (Path path : files().stream().limit(limit).toList()) {
             try {
-                Conversation c = findById(idOf(f)).orElseThrow();
-                out.add(new ConversationSummary(c.id(), c.title(), c.size(), lastModified(f), c.usage()));
+                Conversation conversation = findById(idOf(path)).orElseThrow();
+                summaries.add(new ConversationSummary(conversation.id(), conversation.title(), conversation.size(), lastModified(path),
+                        conversation.usage()));
             } catch (RuntimeException e) {
-                LOG.log(System.Logger.Level.WARNING, "failed to read " + f);
+                LOG.log(System.Logger.Level.WARNING, "failed to read " + path);
             }
         }
-        return out;
+        return summaries;
     }
 
     private List<Path> files() {
         if (!Files.isDirectory(root)) {
             return List.of();
         }
-        try (Stream<Path> s = Files.list(root)) {
-            return s.filter(p -> p.getFileName().toString().endsWith(".jsonl"))
+        try (Stream<Path> children = Files.list(root)) {
+            return children.filter(path -> path.getFileName().toString().endsWith(".jsonl"))
                     .sorted(Comparator.comparing(JsonlConversationRepository::lastModified).reversed()).toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
-    private static ConversationId idOf(Path f) {
-        String n = f.getFileName().toString();
-        return ConversationId.of(n.substring(0, n.length() - ".jsonl".length()));
+    private static ConversationId idOf(Path path) {
+        String fileName = path.getFileName().toString();
+        return ConversationId.of(fileName.substring(0, fileName.length() - ".jsonl".length()));
     }
 
-    private static Instant lastModified(Path f) {
+    private static Instant lastModified(Path path) {
         try {
-            return Files.getLastModifiedTime(f).toInstant();
+            return Files.getLastModifiedTime(path).toInstant();
         } catch (IOException e) {
             return Instant.EPOCH;
         }

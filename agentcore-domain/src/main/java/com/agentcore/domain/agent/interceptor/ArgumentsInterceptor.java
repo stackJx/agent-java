@@ -2,6 +2,7 @@ package com.agentcore.domain.agent.interceptor;
 
 import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.domain.tool.schema.SchemaValidator;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -10,19 +11,24 @@ import java.util.Map;
  */
 public final class ArgumentsInterceptor implements ToolInterceptor {
 
+    /** 校验错误最多告诉模型几条，太多了反而干扰它修正。 */
+    private static final int MAX_REPORTED_ERRORS = 10;
+
     @Override
     @SuppressWarnings("unchecked")
-    public ToolOutput intercept(ToolInvocation inv, Chain chain) {
-        if (inv.call().parseError() != null) {
-            return ToolOutput.error("Error: invalid tool arguments: " + inv.call().parseError()
-                    + ". Send a valid JSON object matching the schema.");
+    public ToolOutput intercept(ToolInvocation invocation, Chain chain) {
+        // 2. 参数是合法 JSON
+        String parseError = invocation.call().parseError();
+        if (parseError != null) {
+            return ToolOutput.error("Error: invalid tool arguments: " + parseError + ". Send a valid JSON object matching the schema.");
         }
-        SchemaValidator.Result vr = SchemaValidator.validate(inv.arguments(), inv.tool().inputSchema());
-        if (!vr.valid()) {
-            return ToolOutput.error("Error: invalid arguments for " + inv.tool().name() + ":\n- "
-                    + String.join("\n- ", vr.errors().subList(0, Math.min(10, vr.errors().size()))));
+        // 3. 参数符合 Schema
+        SchemaValidator.Result result = SchemaValidator.validate(invocation.arguments(), invocation.tool().inputSchema());
+        if (!result.valid()) {
+            List<String> errors = result.errors().subList(0, Math.min(MAX_REPORTED_ERRORS, result.errors().size()));
+            return ToolOutput.error("Error: invalid arguments for " + invocation.tool().name() + ":\n- " + String.join("\n- ", errors));
         }
-        inv.setArguments(vr.value() instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of());
-        return chain.proceed(inv);
+        invocation.setArguments(result.value() instanceof Map<?, ?> coerced ? (Map<String, Object>) coerced : Map.of());
+        return chain.proceed(invocation);
     }
 }

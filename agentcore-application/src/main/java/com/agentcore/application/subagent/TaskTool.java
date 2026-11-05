@@ -16,7 +16,6 @@ import com.agentcore.domain.tool.model.PermissionLevel;
 import com.agentcore.domain.tool.model.Tool;
 import com.agentcore.domain.tool.model.ToolContext;
 import com.agentcore.domain.tool.model.ToolOutput;
-import com.agentcore.domain.tool.model.ToolRegistry;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -36,6 +35,9 @@ import java.util.stream.Collectors;
  * 权限策略、审批与钩子继承自父引擎，子 Agent 无法绕过。
  */
 public final class TaskTool implements Tool {
+
+    /** 档案没指定 maxTurns 时，子 Agent 最多跑几轮。 */
+    private static final int DEFAULT_MAX_TURNS = 50;
 
     private final Map<String, SubAgentProfile> profiles;
     private final Function<String, ModelGateway> modelFactory;
@@ -60,7 +62,7 @@ public final class TaskTool implements Tool {
 
     @Override
     public String description() {
-        String roster = profiles.values().stream().map(p -> "- " + p.name() + ": " + p.description())
+        String roster = profiles.values().stream().map(profile -> "- " + profile.name() + ": " + profile.description())
                 .collect(Collectors.joining("\n"));
         return "Launch a sub-agent with its own fresh context to handle a self-contained task, and get back its final report.\n"
                 + "Use it for broad research or searches that would flood your context, or to run independent pieces of work in "
@@ -71,12 +73,12 @@ public final class TaskTool implements Tool {
 
     @Override
     public Map<String, Object> inputSchema() {
-        Map<String, Object> props = new LinkedHashMap<>();
-        props.put("description", Map.of("type", "string", "description", "A short (3-6 word) label for the task."));
-        props.put("prompt", Map.of("type", "string", "description", "The complete task for the sub-agent."));
-        props.put("agent", Map.of("type", "string", "enum", List.copyOf(profiles.keySet()),
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put("description", Map.of("type", "string", "description", "A short (3-6 word) label for the task."));
+        properties.put("prompt", Map.of("type", "string", "description", "The complete task for the sub-agent."));
+        properties.put("agent", Map.of("type", "string", "enum", List.copyOf(profiles.keySet()),
                 "description", "Which agent type to use (default: general)."));
-        return Map.of("type", "object", "properties", props, "required", List.of("description", "prompt"));
+        return Map.of("type", "object", "properties", properties, "required", List.of("description", "prompt"));
     }
 
     @Override
@@ -111,66 +113,86 @@ public final class TaskTool implements Tool {
         if (root == null) {
             throw new ToolException("task tool is not attached to an agent engine");
         }
-        String agentName = String.valueOf(args.getOrDefault("agent", "general"));
+        SubAgentProfile profile = profileFor(String.valueOf(args.getOrDefault("agent", "general")));
+        int depth = ctx.depth() + 1;
+        if (depth > root.definition().settings().maxDepth()) {
+            throw new ToolException("maximum sub-agent depth reached; do the work directly instead");
+        }
+        AgentEngine child = createChild(root, profile, depth);
+        String label = String.valueOf(args.getOrDefault("description", profile.name()));
+        RunResult result = runChild(child, String.valueOf(args.get("prompt")), label, ctx);
+        return toOutput(result, profile);
+    }
+
+    private SubAgentProfile profileFor(String agentName) {
         SubAgentProfile profile = profiles.get(agentName);
         if (profile == null) {
             throw new ToolException("unknown agent type '" + agentName + "'");
         }
+        return profile;
+    }
+
+    /**
+     * 从父引擎派生子引擎：自己的系统提示词、模型（档案指定了就换）、工具子集；不落盘。
+     * 子 Agent 不能向用户提问；到了最大深度时连 task 也拿掉，防止无限嵌套。
+     */
+    private AgentEngine createChild(AgentEngine root, SubAgentProfile profile, int depth) {
         EngineSettings parentSettings = root.definition().settings();
-        int depth = ctx.depth() + 1;
-        if (depth > parentSettings.maxDepth()) {
-            throw new ToolException("maximum sub-agent depth reached; do the work directly instead");
-        }
+        String name = root.definition().name() + "/" + profile.name();
         ModelGateway model = profile.model() != null && modelFactory != null ? modelFactory.apply(profile.model()) : root.model();
 
-        List<String> exclude = new ArrayList<>(List.of("ask_user"));
+        List<String> excluded = new ArrayList<>(List.of("ask_user"));
         if (depth >= parentSettings.maxDepth()) {
-            exclude.add("task");
+            excluded.add("task");
         }
-        ToolRegistry childTools = root.tools().filtered(profile.tools(), exclude);
-        String prompt = new SystemPromptBuilder()
-                .name(root.definition().name() + "/" + profile.name())
+        String systemPrompt = new SystemPromptBuilder()
+                .name(name)
                 .basePrompt(profile.systemPrompt())
                 .cwd(parentSettings.cwd())
                 .instructions(profile.instructions())
                 .projectInstructions(false)
                 .section(SystemPromptBuilder.SUBAGENT_NOTE)
                 .build();
-        AgentEngine child = root.toBuilder()
-                .definition(new AgentDefinition(root.definition().name() + "/" + profile.name(), prompt,
-                        parentSettings.withMaxTurns(profile.maxTurns() > 0 ? profile.maxTurns() : 50)))
+        int maxTurns = profile.maxTurns() > 0 ? profile.maxTurns() : DEFAULT_MAX_TURNS;
+        return root.toBuilder()
+                .definition(new AgentDefinition(name, systemPrompt, parentSettings.withMaxTurns(maxTurns)))
                 .model(model)
-                .tools(childTools)
+                .tools(root.tools().filtered(profile.tools(), excluded))
                 .repository(null)
                 .depth(depth)
                 .build();
+    }
 
-        String label = String.valueOf(args.getOrDefault("description", profile.name()));
+    /** 在全新的会话里跑子 Agent。父运行取消时一起取消；子 Agent 每调用一个工具就向父运行报一次进度。 */
+    private static RunResult runChild(AgentEngine child, String prompt, String label, ToolContext ctx) {
         RunControl control = new RunControl();
         Runnable unregister = ctx.cancel().onCancel(control::cancel);
-        RunResult result;
         try {
-            result = child.run(Conversation.start(), List.of(new TextBlock(String.valueOf(args.get("prompt")))), e -> {
-                if (e instanceof AgentEvent.ToolStarted ts) {
-                    ctx.report("[" + label + "] " + ts.summary());
+            return child.run(Conversation.start(), List.of(new TextBlock(prompt)), event -> {
+                if (event instanceof AgentEvent.ToolStarted started) {
+                    ctx.report("[" + label + "] " + started.summary());
                 }
             }, control);
         } finally {
             unregister.run();
         }
-        Map<String, Object> meta = new LinkedHashMap<>();
-        meta.put("usage", result.usage());
-        meta.put("turns", result.turns());
-        meta.put("agent", profile.name());
-        meta.put("stop_reason", result.stopReason().wire());
+    }
+
+    /** 子 Agent 的最终答复就是工具结果；用量放在 metadata.usage 里，引擎会把它计入父运行。 */
+    private static ToolOutput toOutput(RunResult result, SubAgentProfile profile) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("usage", result.usage());
+        metadata.put("turns", result.turns());
+        metadata.put("agent", profile.name());
+        metadata.put("stop_reason", result.stopReason().wire());
         if (result.error() != null) {
-            return new ToolOutput(List.of(new TextBlock("Sub-agent failed: " + result.error() + "\nPartial output:\n" + result.text())),
-                    true, meta);
+            String text = "Sub-agent failed: " + result.error() + "\nPartial output:\n" + result.text();
+            return new ToolOutput(List.of(new TextBlock(text)), true, metadata);
         }
         String text = result.text().isBlank() ? "(the sub-agent finished without a final report)" : result.text().strip();
         if (result.stopReason() != StopReason.END_TURN) {
             text += "\n\n[sub-agent stopped: " + result.stopReason().wire() + "]";
         }
-        return ToolOutput.text(text, meta);
+        return ToolOutput.text(text, metadata);
     }
 }

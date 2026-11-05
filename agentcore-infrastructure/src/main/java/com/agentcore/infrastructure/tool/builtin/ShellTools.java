@@ -7,6 +7,7 @@ import com.agentcore.domain.tool.model.ToolContext;
 import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.domain.tool.schema.Schemas;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +16,9 @@ import java.util.concurrent.TimeUnit;
 
 /** bash 工具：在工作目录执行命令，返回合并的 stdout/stderr 与退出码；超时或取消时杀掉整个进程树。 */
 public final class ShellTools {
+
+    private static final int DEFAULT_TIMEOUT_SECONDS = 120;
+    private static final int MAX_TIMEOUT_SECONDS = 600;
 
     private ShellTools() {
     }
@@ -32,48 +36,52 @@ public final class ShellTools {
                 .build();
     }
 
-    static ToolOutput run(Map<String, Object> a, ToolContext ctx) throws Exception {
-        String command = (String) a.get("command");
-        int timeout = Math.max(1, Math.min(600, a.get("timeout") instanceof Number n ? n.intValue() : 120));
-        ProcessBuilder pb = new ProcessBuilder("bash", "-c", command).directory(ctx.cwd().toFile()).redirectErrorStream(true);
-        pb.environment().put("PAGER", "cat");
-        pb.environment().put("GIT_PAGER", "cat");
-        pb.environment().put("TERM", "dumb");
-        pb.redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")));
-        Process proc = pb.start();
-        ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        Thread reader = Thread.ofVirtual().start(() -> copy(proc.getInputStream(), buf));
-        Runnable unregister = ctx.cancel().onCancel(() -> kill(proc));
+    /**
+     * 用 bash -c 跑命令：标准输出和错误合并；分页器关掉、stdin 接 /dev/null，防止命令卡住等输入。
+     * 超时或取消时连同子进程一起杀掉。
+     */
+    static ToolOutput run(Map<String, Object> args, ToolContext ctx) throws Exception {
+        String command = (String) args.get("command");
+        int timeoutSeconds = Math.max(1, Math.min(MAX_TIMEOUT_SECONDS, ToolArgs.integer(args, "timeout", DEFAULT_TIMEOUT_SECONDS)));
+        ProcessBuilder builder = new ProcessBuilder("bash", "-c", command).directory(ctx.cwd().toFile()).redirectErrorStream(true);
+        builder.environment().put("PAGER", "cat");
+        builder.environment().put("GIT_PAGER", "cat");
+        builder.environment().put("TERM", "dumb");
+        builder.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
+        Process process = builder.start();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Thread reader = Thread.ofVirtual().start(() -> copy(process.getInputStream(), output));
+        Runnable unregister = ctx.cancel().onCancel(() -> kill(process));
         try {
-            if (!proc.waitFor(timeout, TimeUnit.SECONDS)) {
-                kill(proc);
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                kill(process);
                 reader.join(2000);
-                throw new ToolException("Command timed out after " + timeout + "s and was killed.\n" + text(buf));
+                throw new ToolException("Command timed out after " + timeoutSeconds + "s and was killed.\n" + text(output));
             }
             reader.join(5000);
         } catch (InterruptedException e) {
-            kill(proc);
+            kill(process);
             throw e;
         } finally {
             unregister.run();
         }
-        String out = text(buf).stripTrailing();
-        int code = proc.exitValue();
-        return ToolOutput.text((out.isEmpty() ? "(no output)" : out) + "\n[exit code " + code + "]", Map.of("exit_code", code));
+        String text = text(output).stripTrailing();
+        int exitCode = process.exitValue();
+        return ToolOutput.text((text.isEmpty() ? "(no output)" : text) + "\n[exit code " + exitCode + "]", Map.of("exit_code", exitCode));
     }
 
-    private static void kill(Process p) {
-        p.descendants().forEach(ProcessHandle::destroyForcibly);
-        p.destroyForcibly();
+    private static void kill(Process process) {
+        process.descendants().forEach(ProcessHandle::destroyForcibly);
+        process.destroyForcibly();
     }
 
     private static void copy(InputStream in, ByteArrayOutputStream out) {
-        byte[] b = new byte[8192];
+        byte[] buffer = new byte[8192];
         try {
-            int n;
-            while ((n = in.read(b)) >= 0) {
+            int read;
+            while ((read = in.read(buffer)) >= 0) {
                 synchronized (out) {
-                    out.write(b, 0, n);
+                    out.write(buffer, 0, read);
                 }
             }
         } catch (IOException ignored) {
@@ -81,9 +89,9 @@ public final class ShellTools {
         }
     }
 
-    private static String text(ByteArrayOutputStream buf) {
-        synchronized (buf) {
-            return buf.toString(StandardCharsets.UTF_8);
+    private static String text(ByteArrayOutputStream output) {
+        synchronized (output) {
+            return output.toString(StandardCharsets.UTF_8);
         }
     }
 }

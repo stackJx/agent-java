@@ -34,6 +34,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class JdbcConversationRepository implements ConversationRepository {
 
+    private static final int MAX_TITLE_LENGTH = 255;
+
     private final JdbcStore store;
     private final String conversations;
     private final String events;
@@ -64,109 +66,113 @@ public final class JdbcConversationRepository implements ConversationRepository 
      * </ol>
      */
     @Override
-    public void save(Conversation c) {
-        List<DomainEvent> pending = c.pullEvents();
+    public void save(Conversation conversation) {
+        ConversationId id = conversation.id();
+        List<DomainEvent> pending = conversation.pullEvents();
         if (pending.isEmpty()) {
-            identityMap.putIfAbsent(c.id(), c);
+            identityMap.putIfAbsent(id, conversation);
             return;
         }
         boolean isNew = pending.get(0) instanceof ConversationStarted;
         try {
             long saved = store.inTransaction(conn -> {
-                long base = isNew ? 0 : currentVersion(conn, c.id());
+                long base = isNew ? 0 : currentVersion(conn, id);
                 long last = base + pending.size();
                 if (isNew) {
-                    insertConversation(conn, c, last);
-                } else if (updateConversation(conn, c, base, last) == 0) {
-                    throw new ConcurrencyConflictException("conversation " + c.id() + " was modified concurrently (expected version " + base + ")");
+                    insertConversation(conn, conversation, last);
+                } else if (updateConversation(conn, conversation, base, last) == 0) {
+                    throw new ConcurrencyConflictException("conversation " + id + " was modified concurrently (expected version " + base + ")");
                 }
-                insertEvents(conn, c.id(), base, pending);
+                insertEvents(conn, id, base, pending);
                 return last;
             });
-            versions.put(c.id(), saved);
-            identityMap.put(c.id(), c);
+            versions.put(id, saved);
+            identityMap.put(id, conversation);
         } catch (RuntimeException e) {
             // 内存中的聚合与存储已分叉：丢弃缓存，下次从数据库重新加载
-            identityMap.remove(c.id());
-            versions.remove(c.id());
+            identityMap.remove(id);
+            versions.remove(id);
             throw e;
         }
     }
 
+    /** 本进程上次写入后记下的版本；没有（例如重启后）就查数据库。 */
     private long currentVersion(Connection conn, ConversationId id) throws SQLException {
         Long known = versions.get(id);
         if (known != null) {
             return known;
         }
-        Long db = selectVersion(conn, id);
-        if (db == null) {
+        Long stored = selectVersion(conn, id);
+        if (stored == null) {
             throw new ConcurrencyConflictException("conversation " + id + " does not exist in the database");
         }
-        return db;
+        return stored;
     }
 
-    private void insertConversation(Connection conn, Conversation c, long lastSeq) throws SQLException {
+    private void insertConversation(Connection conn, Conversation conversation, long lastSeq) throws SQLException {
         String sql = "INSERT INTO " + conversations + " (id, title, metadata, message_count, last_seq, input_tokens, output_tokens, "
                 + "cache_read_tokens, cache_write_tokens, requests, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            TokenUsage u = c.usage();
-            ps.setString(1, c.id().value());
-            ps.setString(2, title(c));
-            ps.setString(3, Json.write(c.metadata()));
-            ps.setInt(4, c.size());
-            ps.setLong(5, lastSeq);
-            ps.setLong(6, u.inputTokens());
-            ps.setLong(7, u.outputTokens());
-            ps.setLong(8, u.cacheReadTokens());
-            ps.setLong(9, u.cacheWriteTokens());
-            ps.setInt(10, u.requests());
-            ps.setTimestamp(11, Timestamp.from(c.createdAt()));
-            ps.setTimestamp(12, Timestamp.from(c.updatedAt()));
+            ps.setString(1, conversation.id().value());
+            int next = bindSummary(ps, 2, conversation, lastSeq);
+            ps.setTimestamp(next, Timestamp.from(conversation.createdAt()));
+            ps.setTimestamp(next + 1, Timestamp.from(conversation.updatedAt()));
             ps.executeUpdate();
         }
     }
 
-    private int updateConversation(Connection conn, Conversation c, long expected, long lastSeq) throws SQLException {
+    /** 带版本条件的更新，返回更新的行数：0 表示版本对不上（别的实例先写了）。 */
+    private int updateConversation(Connection conn, Conversation conversation, long expectedSeq, long lastSeq) throws SQLException {
         String sql = "UPDATE " + conversations + " SET title = ?, metadata = ?, message_count = ?, last_seq = ?, input_tokens = ?, "
                 + "output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, requests = ?, updated_at = ? WHERE id = ? AND last_seq = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            TokenUsage u = c.usage();
-            ps.setString(1, title(c));
-            ps.setString(2, Json.write(c.metadata()));
-            ps.setInt(3, c.size());
-            ps.setLong(4, lastSeq);
-            ps.setLong(5, u.inputTokens());
-            ps.setLong(6, u.outputTokens());
-            ps.setLong(7, u.cacheReadTokens());
-            ps.setLong(8, u.cacheWriteTokens());
-            ps.setInt(9, u.requests());
-            ps.setTimestamp(10, Timestamp.from(c.updatedAt()));
-            ps.setString(11, c.id().value());
-            ps.setLong(12, expected);
+            int next = bindSummary(ps, 1, conversation, lastSeq);
+            ps.setTimestamp(next, Timestamp.from(conversation.updatedAt()));
+            ps.setString(next + 1, conversation.id().value());
+            ps.setLong(next + 2, expectedSeq);
             return ps.executeUpdate();
         }
+    }
+
+    /**
+     * 从第 index 个参数开始绑定 INSERT / UPDATE 共有的摘要字段：
+     * title, metadata, message_count, last_seq, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, requests。
+     * 返回下一个参数的位置。
+     */
+    private static int bindSummary(PreparedStatement ps, int index, Conversation conversation, long lastSeq) throws SQLException {
+        TokenUsage usage = conversation.usage();
+        ps.setString(index++, title(conversation));
+        ps.setString(index++, Json.write(conversation.metadata()));
+        ps.setInt(index++, conversation.size());
+        ps.setLong(index++, lastSeq);
+        ps.setLong(index++, usage.inputTokens());
+        ps.setLong(index++, usage.outputTokens());
+        ps.setLong(index++, usage.cacheReadTokens());
+        ps.setLong(index++, usage.cacheWriteTokens());
+        ps.setInt(index++, usage.requests());
+        return index;
     }
 
     private void insertEvents(Connection conn, ConversationId id, long base, List<DomainEvent> pending) throws SQLException {
         String sql = "INSERT INTO " + events + " (conversation_id, seq, event_type, payload, created_at) VALUES (?, ?, ?, ?, ?)";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             long seq = base;
-            for (DomainEvent e : pending) {
-                JsonNode n = DomainCodec.event(e);
+            for (DomainEvent event : pending) {
+                JsonNode encoded = DomainCodec.event(event);
                 ps.setString(1, id.value());
                 ps.setLong(2, ++seq);
-                ps.setString(3, n.path("t").asText());
-                ps.setString(4, Json.write(n));
-                ps.setTimestamp(5, Timestamp.from(e.occurredAt()));
+                ps.setString(3, encoded.path("t").asText());
+                ps.setString(4, Json.write(encoded));
+                ps.setTimestamp(5, Timestamp.from(event.occurredAt()));
                 ps.addBatch();
             }
             ps.executeBatch();
         }
     }
 
-    private static String title(Conversation c) {
-        String t = c.title();
-        return t.length() > 255 ? t.substring(0, 255) : t;
+    private static String title(Conversation conversation) {
+        String title = conversation.title();
+        return title.length() > MAX_TITLE_LENGTH ? title.substring(0, MAX_TITLE_LENGTH) : title;
     }
 
     // ------------------------------------------------------------------ 读
@@ -175,39 +181,47 @@ public final class JdbcConversationRepository implements ConversationRepository 
     @Override
     public Optional<Conversation> findById(ConversationId id) {
         return store.query(conn -> {
-            Long dbVersion = selectVersion(conn, id);
-            if (dbVersion == null) {
+            Long storedVersion = selectVersion(conn, id);
+            if (storedVersion == null) {
                 identityMap.remove(id);
                 versions.remove(id);
                 return Optional.empty();
             }
             Conversation cached = identityMap.get(id);
-            if (cached != null && dbVersion.equals(versions.get(id))) {
+            if (cached != null && storedVersion.equals(versions.get(id))) {
                 return Optional.of(cached);
             }
-            List<DomainEvent> history = new ArrayList<>();
-            long lastSeq = 0;
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT seq, payload FROM " + events + " WHERE conversation_id = ? ORDER BY seq")) {
-                ps.setString(1, id.value());
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        lastSeq = rs.getLong(1);
-                        DomainEvent e = DomainCodec.event(Json.read(rs.getString(2)), id);
-                        if (e != null) {
-                            history.add(e);
-                        }
+            History history = loadHistory(conn, id);
+            if (history.events().isEmpty()) {
+                return Optional.empty();
+            }
+            Conversation loaded = Conversation.replay(history.events());
+            identityMap.put(id, loaded);
+            versions.put(id, history.lastSeq());
+            return Optional.of(loaded);
+        });
+    }
+
+    /** 一个会话的全部事件（按顺序）和最后一个事件的序号（即版本号）。 */
+    private record History(List<DomainEvent> events, long lastSeq) {
+    }
+
+    private History loadHistory(Connection conn, ConversationId id) throws SQLException {
+        List<DomainEvent> history = new ArrayList<>();
+        long lastSeq = 0;
+        try (PreparedStatement ps = conn.prepareStatement("SELECT seq, payload FROM " + events + " WHERE conversation_id = ? ORDER BY seq")) {
+            ps.setString(1, id.value());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    lastSeq = rs.getLong(1);
+                    DomainEvent event = DomainCodec.event(Json.read(rs.getString(2)), id);
+                    if (event != null) { // 不认识的事件类型（新版本写入的）跳过
+                        history.add(event);
                     }
                 }
             }
-            if (history.isEmpty()) {
-                return Optional.empty();
-            }
-            Conversation loaded = Conversation.replay(history);
-            identityMap.put(id, loaded);
-            versions.put(id, lastSeq);
-            return Optional.of(loaded);
-        });
+        }
+        return new History(history, lastSeq);
     }
 
     private Long selectVersion(Connection conn, ConversationId id) throws SQLException {
@@ -235,24 +249,24 @@ public final class JdbcConversationRepository implements ConversationRepository 
     @Override
     public List<ConversationSummary> list(int limit) {
         return store.query(conn -> {
-            List<ConversationSummary> out = new ArrayList<>();
+            List<ConversationSummary> summaries = new ArrayList<>();
             try (PreparedStatement ps = conn.prepareStatement("SELECT id, title, message_count, updated_at, input_tokens, output_tokens, "
                     + "cache_read_tokens, cache_write_tokens, requests FROM " + conversations + " ORDER BY updated_at DESC")) {
                 ps.setMaxRows(Math.max(1, limit)); // 标准 JDBC 分页，不依赖 LIMIT / FETCH FIRST 方言
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
-                        Timestamp ts = rs.getTimestamp(4);
-                        out.add(new ConversationSummary(ConversationId.of(rs.getString(1)), nullToEmpty(rs.getString(2)), rs.getInt(3),
-                                ts == null ? Instant.EPOCH : ts.toInstant(),
+                        Timestamp updatedAt = rs.getTimestamp(4);
+                        summaries.add(new ConversationSummary(ConversationId.of(rs.getString(1)), nullToEmpty(rs.getString(2)), rs.getInt(3),
+                                updatedAt == null ? Instant.EPOCH : updatedAt.toInstant(),
                                 new TokenUsage(rs.getLong(5), rs.getLong(6), rs.getLong(7), rs.getLong(8), rs.getInt(9))));
                     }
                 }
             }
-            return out;
+            return summaries;
         });
     }
 
-    private static String nullToEmpty(String s) {
-        return s == null ? "" : s;
+    private static String nullToEmpty(String text) {
+        return text == null ? "" : text;
     }
 }

@@ -61,14 +61,14 @@ public final class RulePermissionPolicy implements PermissionPolicy {
     @Override
     public Verdict check(Tool tool, Map<String, Object> arguments) {
         String subject = tool.permissionSubject(arguments);
-        for (PermissionRule r : deny) {
-            if (matchesAny(r, tool.name(), subject)) {
-                return new Verdict(Decision.DENY, "denied by rule " + r);
+        for (PermissionRule rule : deny) {
+            if (matchesAny(rule, tool.name(), subject)) {
+                return new Verdict(Decision.DENY, "denied by rule " + rule);
             }
         }
-        for (PermissionRule r : ask) {
-            if (matchesAny(r, tool.name(), subject)) {
-                return new Verdict(Decision.ASK, "rule " + r + " requires approval");
+        for (PermissionRule rule : ask) {
+            if (matchesAny(rule, tool.name(), subject)) {
+                return new Verdict(Decision.ASK, "rule " + rule + " requires approval");
             }
         }
         PermissionRule hit = allowedBy(tool.name(), subject);
@@ -110,35 +110,35 @@ public final class RulePermissionPolicy implements PermissionPolicy {
         return Arrays.stream(SPLIT.split(command.strip())).filter(s -> !s.isEmpty()).toList();
     }
 
-    private static boolean matchesAny(PermissionRule r, String toolName, String subject) {
-        if (!GlobPattern.matches(r.tool(), toolName)) {
+    private static boolean matchesAny(PermissionRule rule, String toolName, String subject) {
+        if (!GlobPattern.matches(rule.tool(), toolName)) {
             return false;
         }
-        if (r.pattern() == null) {
+        if (rule.pattern() == null) {
             return true;
         }
         if (toolName.equals("bash")) {
-            return GlobPattern.matches(r.pattern(), subject)
-                    || splitCommands(subject).stream().anyMatch(p -> GlobPattern.matches(r.pattern(), p));
+            return GlobPattern.matches(rule.pattern(), subject)
+                    || splitCommands(subject).stream().anyMatch(p -> GlobPattern.matches(rule.pattern(), p));
         }
-        return GlobPattern.matches(r.pattern(), subject);
+        return GlobPattern.matches(rule.pattern(), subject);
     }
 
     private PermissionRule allowedBy(String toolName, String subject) {
         List<PermissionRule> rules = new ArrayList<>();
-        for (PermissionRule r : allow) {
-            if (GlobPattern.matches(r.tool(), toolName)) {
-                if (r.pattern() == null) {
-                    return r;
+        for (PermissionRule rule : allow) {
+            if (GlobPattern.matches(rule.tool(), toolName)) {
+                if (rule.pattern() == null) {
+                    return rule;
                 }
-                rules.add(r);
+                rules.add(rule);
             }
         }
         if (rules.isEmpty()) {
             return null;
         }
         if (!toolName.equals("bash")) {
-            return rules.stream().filter(r -> GlobPattern.matches(r.pattern(), subject)).findFirst().orElse(null);
+            return rules.stream().filter(rule -> GlobPattern.matches(rule.pattern(), subject)).findFirst().orElse(null);
         }
         List<String> parts = splitCommands(subject);
         if (parts.isEmpty() || RISKY.matcher(subject).find()) {
@@ -146,7 +146,7 @@ public final class RulePermissionPolicy implements PermissionPolicy {
         }
         PermissionRule first = null;
         for (String part : parts) {
-            PermissionRule hit = rules.stream().filter(r -> GlobPattern.matches(r.pattern(), part)).findFirst().orElse(null);
+            PermissionRule hit = rules.stream().filter(rule -> GlobPattern.matches(rule.pattern(), part)).findFirst().orElse(null);
             if (hit == null) {
                 return null;
             }

@@ -2,6 +2,7 @@ package com.agentcore.infrastructure.mcp;
 
 import com.agentcore.infrastructure.json.Json;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,6 +18,8 @@ import java.util.function.Consumer;
 
 /** Streamable HTTP 传输（MCP 2025-03-26 及之后）：每条消息一个 POST，响应可以是 JSON 或 SSE。 */
 public final class HttpTransport implements McpTransport {
+
+    private static final int MAX_ERROR_CHARS = 500;
 
     private final URI url;
     private final Map<String, String> headers;
@@ -43,77 +46,91 @@ public final class HttpTransport implements McpTransport {
     }
 
     private HttpRequest.Builder base() {
-        HttpRequest.Builder b = HttpRequest.newBuilder(url).timeout(timeout);
-        headers.forEach(b::header);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(url).timeout(timeout);
+        headers.forEach(builder::header);
         if (sessionId != null) {
-            b.header("Mcp-Session-Id", sessionId);
+            builder.header("Mcp-Session-Id", sessionId);
         }
         if (protocolVersion != null) {
-            b.header("MCP-Protocol-Version", protocolVersion);
+            builder.header("MCP-Protocol-Version", protocolVersion);
         }
-        return b;
+        return builder;
     }
 
+    /**
+     * 每条消息一个 POST。服务端可以回 202（通知，无响应体）、普通 JSON，或者一个 SSE 流（期间可能夹带服务端请求）。
+     * HTTP 错误转成一条 JSON-RPC 错误回复，让等待这个 id 的请求立即失败。
+     */
     @Override
     public void send(JsonNode message) throws IOException, InterruptedException {
-        HttpRequest req = base().header("Content-Type", "application/json").header("Accept", "application/json, text/event-stream")
+        HttpRequest request = base().header("Content-Type", "application/json").header("Accept", "application/json, text/event-stream")
                 .POST(HttpRequest.BodyPublishers.ofString(Json.write(message))).build();
-        HttpResponse<InputStream> r = http.send(req, HttpResponse.BodyHandlers.ofInputStream());
-        r.headers().firstValue("mcp-session-id").ifPresent(s -> sessionId = s);
-        try (InputStream in = r.body()) {
-            if (r.statusCode() == 202) {
+        HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        response.headers().firstValue("mcp-session-id").ifPresent(id -> sessionId = id);
+        try (InputStream body = response.body()) {
+            if (response.statusCode() == 202) {
                 return;
             }
-            if (r.statusCode() >= 400) {
-                String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-                if (message.has("id")) {
-                    var err = Json.object().put("jsonrpc", "2.0");
-                    err.set("id", message.get("id"));
-                    err.putObject("error").put("code", -32000).put("message", "HTTP " + r.statusCode() + ": "
-                            + body.substring(0, Math.min(500, body.length())));
-                    onMessage.accept(err);
-                }
+            if (response.statusCode() >= 400) {
+                replyWithError(message, response.statusCode(), new String(body.readAllBytes(), StandardCharsets.UTF_8));
                 return;
             }
-            String ctype = r.headers().firstValue("content-type").orElse("");
-            if (ctype.contains("text/event-stream")) {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-                StringBuilder data = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.startsWith("data:")) {
-                        if (!data.isEmpty()) {
-                            data.append('\n');
-                        }
-                        data.append(line.substring(5).stripLeading());
-                    } else if (line.isEmpty() && !data.isEmpty()) {
-                        dispatch(data.toString());
-                        data.setLength(0);
-                    }
-                }
-                if (!data.isEmpty()) {
-                    dispatch(data.toString());
-                }
+            String contentType = response.headers().firstValue("content-type").orElse("");
+            if (contentType.contains("text/event-stream")) {
+                readEventStream(body);
             } else {
-                String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-                if (!body.isBlank()) {
-                    dispatch(body);
+                String text = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+                if (!text.isBlank()) {
+                    dispatch(text);
                 }
             }
         }
     }
 
+    private void replyWithError(JsonNode message, int status, String body) {
+        if (!message.has("id")) {
+            return; // 通知没人等回复
+        }
+        ObjectNode error = Json.object().put("jsonrpc", "2.0");
+        error.set("id", message.get("id"));
+        error.putObject("error").put("code", -32000)
+                .put("message", "HTTP " + status + ": " + body.substring(0, Math.min(MAX_ERROR_CHARS, body.length())));
+        onMessage.accept(error);
+    }
+
+    /** SSE：连续的 data 行拼成一个事件，空行表示事件结束。 */
+    private void readEventStream(InputStream body) throws IOException {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8));
+        StringBuilder data = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (line.startsWith("data:")) {
+                if (!data.isEmpty()) {
+                    data.append('\n');
+                }
+                data.append(line.substring("data:".length()).stripLeading());
+            } else if (line.isEmpty() && !data.isEmpty()) {
+                dispatch(data.toString());
+                data.setLength(0);
+            }
+        }
+        if (!data.isEmpty()) {
+            dispatch(data.toString());
+        }
+    }
+
+    /** 一条消息或一批消息（数组）；不是 JSON 就丢掉。 */
     private void dispatch(String text) {
-        JsonNode n;
+        JsonNode message;
         try {
-            n = Json.read(text);
-        } catch (RuntimeException e) {
+            message = Json.read(text);
+        } catch (RuntimeException notJson) {
             return;
         }
-        if (n.isArray()) {
-            n.forEach(onMessage);
+        if (message.isArray()) {
+            message.forEach(onMessage);
         } else {
-            onMessage.accept(n);
+            onMessage.accept(message);
         }
     }
 

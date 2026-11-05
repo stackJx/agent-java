@@ -19,6 +19,7 @@ import com.agentcore.domain.conversation.message.TextBlock;
 import com.agentcore.domain.conversation.message.ToolCall;
 import com.agentcore.domain.conversation.message.ToolResult;
 import com.agentcore.domain.conversation.model.Conversation;
+import com.agentcore.domain.llm.exception.ContextOverflowException;
 import com.agentcore.domain.llm.exception.MalformedOutputException;
 import com.agentcore.domain.llm.exception.ModelException;
 import com.agentcore.domain.llm.model.StopReason;
@@ -315,5 +316,23 @@ class AgentEngineTest {
         assertTrue(events.stream().anyMatch(AgentEvent.Compacted.class::isInstance));
         assertTrue(c.messages().get(0).text().startsWith("<conversation_summary>"));
         assertEquals(1, c.compactions());
+    }
+
+    @Test
+    void requestOverflowCompactsAndRetriesTheSameTurn() {
+        FakeModel m = new FakeModel()
+                .then(reply("第一次回答"))
+                .thenThrow(new ContextOverflowException("prompt is too long", null))
+                .then(reply("SUMMARY: 之前问过第一个问题")) // 压缩时请求的摘要
+                .then(q -> reply(q.messages().get(0).text().contains("SUMMARY") ? "压缩后继续" : "WRONG"));
+        AgentEngine e = engine(m).build();
+        Conversation c = Conversation.start();
+        run(e, c, "第一个问题", new ArrayList<>());
+        List<AgentEvent> events = new ArrayList<>();
+        RunResult r = run(e, c, "第二个问题", events);
+        assertEquals("压缩后继续", r.text());
+        assertEquals(1, r.turns(), "压缩后重发属于同一轮");
+        assertEquals(1, c.compactions());
+        assertTrue(events.stream().anyMatch(AgentEvent.Compacted.class::isInstance));
     }
 }

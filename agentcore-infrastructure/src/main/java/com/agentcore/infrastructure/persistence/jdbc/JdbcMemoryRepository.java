@@ -57,16 +57,17 @@ public final class JdbcMemoryRepository implements MemoryRepository {
     }
 
     @Override
-    public void save(MemoryEntry e) {
+    public void save(MemoryEntry entry) {
+        // 先更新，没有这条再插入；插入撞上唯一约束说明别人刚插了，改为更新
         store.inTransaction(conn -> {
-            if (update(conn, e) == 0) {
+            if (update(conn, entry) == 0) {
                 try {
-                    insert(conn, e);
-                } catch (SQLException ex) {
-                    if (!JdbcStore.isIntegrityViolation(ex)) {
-                        throw ex;
+                    insert(conn, entry);
+                } catch (SQLException e) {
+                    if (!JdbcStore.isIntegrityViolation(e)) {
+                        throw e;
                     }
-                    update(conn, e); // 并发插入：改为更新
+                    update(conn, entry);
                 }
             }
             return null;
@@ -84,41 +85,41 @@ public final class JdbcMemoryRepository implements MemoryRepository {
         });
     }
 
-    private int update(Connection conn, MemoryEntry e) throws SQLException {
+    private int update(Connection conn, MemoryEntry entry) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("UPDATE " + table
                 + " SET description = ?, memory_type = ?, content = ?, updated_at = ? WHERE scope_id = ? AND name = ?")) {
-            ps.setString(1, e.description());
-            ps.setString(2, e.type().wire());
-            ps.setString(3, e.content());
-            ps.setTimestamp(4, Timestamp.valueOf(e.updated().atStartOfDay()));
+            ps.setString(1, entry.description());
+            ps.setString(2, entry.type().wire());
+            ps.setString(3, entry.content());
+            ps.setTimestamp(4, Timestamp.valueOf(entry.updated().atStartOfDay()));
             ps.setString(5, scope);
-            ps.setString(6, e.name());
+            ps.setString(6, entry.name());
             return ps.executeUpdate();
         }
     }
 
-    private void insert(Connection conn, MemoryEntry e) throws SQLException {
+    private void insert(Connection conn, MemoryEntry entry) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("INSERT INTO " + table
                 + " (scope_id, name, description, memory_type, content, updated_at) VALUES (?, ?, ?, ?, ?, ?)")) {
             ps.setString(1, scope);
-            ps.setString(2, e.name());
-            ps.setString(3, e.description());
-            ps.setString(4, e.type().wire());
-            ps.setString(5, e.content());
-            ps.setTimestamp(6, Timestamp.valueOf(e.updated().atStartOfDay()));
+            ps.setString(2, entry.name());
+            ps.setString(3, entry.description());
+            ps.setString(4, entry.type().wire());
+            ps.setString(5, entry.content());
+            ps.setTimestamp(6, Timestamp.valueOf(entry.updated().atStartOfDay()));
             ps.executeUpdate();
         }
     }
 
     private static List<MemoryEntry> read(PreparedStatement ps) throws SQLException {
-        List<MemoryEntry> out = new ArrayList<>();
+        List<MemoryEntry> entries = new ArrayList<>();
         try (ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
-                Timestamp ts = rs.getTimestamp(5);
-                LocalDate updated = ts == null ? null : ts.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
-                out.add(new MemoryEntry(rs.getString(1), rs.getString(2), MemoryType.parse(rs.getString(3)), rs.getString(4), updated));
+                Timestamp updatedAt = rs.getTimestamp(5);
+                LocalDate updated = updatedAt == null ? null : updatedAt.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+                entries.add(new MemoryEntry(rs.getString(1), rs.getString(2), MemoryType.parse(rs.getString(3)), rs.getString(4), updated));
             }
         }
-        return out;
+        return entries;
     }
 }

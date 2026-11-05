@@ -20,7 +20,7 @@ public record MemoryEntry(String name, String description, MemoryType type, Stri
     }
 
     public static String slug(String name) {
-        String s = name.strip().toLowerCase().replaceAll("[^\\p{L}\\p{N}_-]+", "-").replaceAll("^-+|-+$", "");
-        return s.isEmpty() ? "untitled" : s.length() > 80 ? s.substring(0, 80) : s;
+        String normalized = name.strip().toLowerCase().replaceAll("[^\\p{L}\\p{N}_-]+", "-").replaceAll("^-+|-+$", "");
+        return normalized.isEmpty() ? "untitled" : normalized.length() > 80 ? normalized.substring(0, 80) : normalized;
     }
 }

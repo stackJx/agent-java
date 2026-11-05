@@ -3,6 +3,7 @@ package com.agentcore.infrastructure.tool.builtin;
 import com.agentcore.domain.tool.exception.ToolException;
 import com.agentcore.domain.tool.model.FunctionTool;
 import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolContext;
 import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.domain.tool.schema.Schemas;
 import java.io.IOException;
@@ -11,6 +12,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -19,6 +21,9 @@ public final class WebTools {
 
     private static final HttpClient HTTP = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL)
             .connectTimeout(Duration.ofSeconds(20)).build();
+
+    private static final int DEFAULT_MAX_CHARS = 20_000;
+    private static final int MAX_ERROR_CHARS = 500;
 
     private WebTools() {
     }
@@ -32,30 +37,34 @@ public final class WebTools {
                         .build())
                 .readOnly(true)
                 .timeout(Duration.ofSeconds(60))
-                .handler((a, ctx) -> {
-                    String url = (String) a.get("url");
-                    if (!url.matches("^https?://.+")) {
-                        throw new ToolException("Only http(s) URLs are supported.");
-                    }
-                    int max = FileTools.num(a.get("max_chars"), 20_000);
-                    HttpResponse<String> r;
-                    try {
-                        r = HTTP.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30))
-                                .header("User-Agent", "agentcore/0.1 (+web_fetch)").GET().build(), HttpResponse.BodyHandlers.ofString());
-                    } catch (IOException e) {
-                        throw new ToolException("Request failed: " + e.getMessage());
-                    }
-                    if (r.statusCode() >= 400) {
-                        String b = r.body();
-                        throw new ToolException("HTTP " + r.statusCode() + " for " + url + ": " + b.substring(0, Math.min(500, b.length())));
-                    }
-                    String ctype = r.headers().firstValue("content-type").orElse("");
-                    String body = ctype.contains("html") ? htmlToText(r.body()) : r.body();
-                    if (body.length() > max) {
-                        body = body.substring(0, max) + "\n\n... [truncated, " + (body.length() - max) + " more chars]";
-                    }
-                    return ToolOutput.text("URL: " + r.uri() + "\n\n" + body);
-                }).build();
+                .handler(WebTools::fetch)
+                .build();
+    }
+
+    private static ToolOutput fetch(Map<String, Object> args, ToolContext ctx) throws InterruptedException {
+        String url = (String) args.get("url");
+        if (!url.matches("^https?://.+")) {
+            throw new ToolException("Only http(s) URLs are supported.");
+        }
+        int maxChars = ToolArgs.integer(args, "max_chars", DEFAULT_MAX_CHARS);
+        HttpResponse<String> response;
+        try {
+            response = HTTP.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30))
+                    .header("User-Agent", "agentcore/0.1 (+web_fetch)").GET().build(), HttpResponse.BodyHandlers.ofString());
+        } catch (IOException e) {
+            throw new ToolException("Request failed: " + e.getMessage());
+        }
+        if (response.statusCode() >= 400) {
+            String error = response.body();
+            throw new ToolException("HTTP " + response.statusCode() + " for " + url + ": "
+                    + error.substring(0, Math.min(MAX_ERROR_CHARS, error.length())));
+        }
+        String contentType = response.headers().firstValue("content-type").orElse("");
+        String body = contentType.contains("html") ? htmlToText(response.body()) : response.body();
+        if (body.length() > maxChars) {
+            body = body.substring(0, maxChars) + "\n\n... [truncated, " + (body.length() - maxChars) + " more chars]";
+        }
+        return ToolOutput.text("URL: " + response.uri() + "\n\n" + body);
     }
 
     private static final Pattern TITLE = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
@@ -63,24 +72,24 @@ public final class WebTools {
     /** 简单的 HTML → 文本：去掉脚本样式，块级元素换行，链接保留地址。 */
     public static String htmlToText(String html) {
         String title = "";
-        Matcher tm = TITLE.matcher(html);
-        if (tm.find()) {
-            title = decode(tm.group(1)).strip();
+        Matcher titleMatch = TITLE.matcher(html);
+        if (titleMatch.find()) {
+            title = decode(titleMatch.group(1)).strip();
         }
-        String s = html.replaceAll("(?is)<(script|style|noscript|svg|head|template)[^>]*>.*?</\\1>", " ");
-        s = s.replaceAll("(?is)<h([1-3])[^>]*>", "\n\n#H$1 ");
-        s = s.replaceAll("(?is)<li[^>]*>", "\n- ");
-        s = s.replaceAll("(?is)<a\\s[^>]*href=[\"'](https?://[^\"']+)[\"'][^>]*>(.*?)</a>", "$2 ($1)");
-        s = s.replaceAll("(?is)</?(p|div|br|tr|section|article|pre|table|header|footer|h[1-6])[^>]*>", "\n");
-        s = s.replaceAll("(?s)<[^>]+>", "");
-        s = decode(s);
-        s = s.replace("#H1 ", "# ").replace("#H2 ", "## ").replace("#H3 ", "### ");
-        s = s.replaceAll("[ \\t\\x0B\\f\\r]+", " ").replaceAll("\\n\\s*\\n+", "\n\n").strip();
-        return title.isEmpty() ? s : "# " + title + "\n\n" + s;
+        String text = html.replaceAll("(?is)<(script|style|noscript|svg|head|template)[^>]*>.*?</\\1>", " ");
+        text = text.replaceAll("(?is)<h([1-3])[^>]*>", "\n\n#H$1 ");                // 标题先打个标记，最后换成 Markdown
+        text = text.replaceAll("(?is)<li[^>]*>", "\n- ");
+        text = text.replaceAll("(?is)<a\\s[^>]*href=[\"'](https?://[^\"']+)[\"'][^>]*>(.*?)</a>", "$2 ($1)");
+        text = text.replaceAll("(?is)</?(p|div|br|tr|section|article|pre|table|header|footer|h[1-6])[^>]*>", "\n");
+        text = text.replaceAll("(?s)<[^>]+>", "");
+        text = decode(text);
+        text = text.replace("#H1 ", "# ").replace("#H2 ", "## ").replace("#H3 ", "### ");
+        text = text.replaceAll("[ \\t\\x0B\\f\\r]+", " ").replaceAll("\\n\\s*\\n+", "\n\n").strip();
+        return title.isEmpty() ? text : "# " + title + "\n\n" + text;
     }
 
-    private static String decode(String s) {
-        return s.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
+    private static String decode(String text) {
+        return text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
                 .replace("&#39;", "'").replace("&amp;", "&");
     }
 }

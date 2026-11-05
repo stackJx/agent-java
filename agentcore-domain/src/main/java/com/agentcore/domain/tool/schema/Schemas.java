@@ -48,11 +48,11 @@ public final class Schemas {
     }
 
     private static Map<String, Object> withDesc(Map<String, Object> base, String description) {
-        Map<String, Object> m = new LinkedHashMap<>(base);
+        Map<String, Object> schema = new LinkedHashMap<>(base);
         if (description != null && !description.isEmpty()) {
-            m.put("description", description);
+            schema.put("description", description);
         }
-        return m;
+        return schema;
     }
 
     public static final class ObjectSchema {
@@ -98,16 +98,16 @@ public final class Schemas {
         }
 
         public Map<String, Object> build() {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("type", "object");
-            m.put("properties", new LinkedHashMap<>(properties));
+            Map<String, Object> schema = new LinkedHashMap<>();
+            schema.put("type", "object");
+            schema.put("properties", new LinkedHashMap<>(properties));
             if (!required.isEmpty()) {
-                m.put("required", List.copyOf(required));
+                schema.put("required", List.copyOf(required));
             }
             if (additionalProperties != null) {
-                m.put("additionalProperties", additionalProperties);
+                schema.put("additionalProperties", additionalProperties);
             }
-            return m;
+            return schema;
         }
     }
 }

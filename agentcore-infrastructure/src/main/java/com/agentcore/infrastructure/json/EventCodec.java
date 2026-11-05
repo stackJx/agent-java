@@ -9,73 +9,73 @@ public final class EventCodec {
     private EventCodec() {
     }
 
-    public static ObjectNode encode(AgentEvent e) {
-        ObjectNode n = Json.object();
-        n.put("type", e.type());
-        switch (e) {
-            case AgentEvent.RunStarted r -> {
-                n.put("conversation_id", r.conversationId());
-                n.put("agent", r.agent());
-                n.put("model", r.model());
+    public static ObjectNode encode(AgentEvent event) {
+        ObjectNode json = Json.object();
+        json.put("type", event.type());
+        switch (event) {
+            case AgentEvent.RunStarted started -> {
+                json.put("conversation_id", started.conversationId());
+                json.put("agent", started.agent());
+                json.put("model", started.model());
             }
-            case AgentEvent.TurnStarted t -> n.put("turn", t.turn());
-            case AgentEvent.TextDelta t -> n.put("text", t.text());
-            case AgentEvent.ThinkingDelta t -> n.put("text", t.text());
-            case AgentEvent.ToolCallStreaming t -> {
-                n.put("id", t.id());
-                n.put("name", t.name());
+            case AgentEvent.TurnStarted turn -> json.put("turn", turn.turn());
+            case AgentEvent.TextDelta delta -> json.put("text", delta.text());
+            case AgentEvent.ThinkingDelta delta -> json.put("text", delta.text());
+            case AgentEvent.ToolCallStreaming streaming -> {
+                json.put("id", streaming.id());
+                json.put("name", streaming.name());
             }
-            case AgentEvent.AssistantMessageCompleted a -> {
-                n.set("message", DomainCodec.message(a.message()));
-                n.set("usage", DomainCodec.usage(a.usage()));
-                n.put("stop_reason", a.stopReason().wire());
+            case AgentEvent.AssistantMessageCompleted completed -> {
+                json.set("message", DomainCodec.message(completed.message()));
+                json.set("usage", DomainCodec.usage(completed.usage()));
+                json.put("stop_reason", completed.stopReason().wire());
             }
-            case AgentEvent.ToolStarted t -> {
-                n.set("call", DomainCodec.block(t.call()));
-                n.put("summary", t.summary());
+            case AgentEvent.ToolStarted started -> {
+                json.set("call", DomainCodec.block(started.call()));
+                json.put("summary", started.summary());
             }
-            case AgentEvent.ToolProgress p -> {
-                n.put("call_id", p.callId());
-                n.put("message", p.message());
+            case AgentEvent.ToolProgress progress -> {
+                json.put("call_id", progress.callId());
+                json.put("message", progress.message());
             }
-            case AgentEvent.PermissionDecided p -> {
-                n.put("call_id", p.callId());
-                n.put("tool", p.tool());
-                n.put("decision", p.decision());
-                n.put("reason", p.reason());
+            case AgentEvent.PermissionDecided decided -> {
+                json.put("call_id", decided.callId());
+                json.put("tool", decided.tool());
+                json.put("decision", decided.decision());
+                json.put("reason", decided.reason());
             }
-            case AgentEvent.ToolFinished f -> {
-                n.put("call_id", f.call().id());
-                n.put("tool", f.call().name());
-                n.put("output", f.output());
-                n.put("is_error", f.isError());
-                n.put("duration_ms", f.durationMillis());
-                n.set("metadata", Json.tree(f.metadata()));
+            case AgentEvent.ToolFinished finished -> {
+                json.put("call_id", finished.call().id());
+                json.put("tool", finished.call().name());
+                json.put("output", finished.output());
+                json.put("is_error", finished.isError());
+                json.put("duration_ms", finished.durationMillis());
+                json.set("metadata", Json.tree(finished.metadata()));
             }
-            case AgentEvent.Compacted c -> {
-                n.put("tokens_before", c.tokensBefore());
-                n.put("tokens_after", c.tokensAfter());
-                n.put("summary", c.summary());
+            case AgentEvent.Compacted compacted -> {
+                json.put("tokens_before", compacted.tokensBefore());
+                json.put("tokens_after", compacted.tokensAfter());
+                json.put("summary", compacted.summary());
             }
-            case AgentEvent.Retrying r -> {
-                n.put("attempt", r.attempt());
-                n.put("delay_ms", r.delayMillis());
-                n.put("error", r.error());
+            case AgentEvent.Retrying retrying -> {
+                json.put("attempt", retrying.attempt());
+                json.put("delay_ms", retrying.delayMillis());
+                json.put("error", retrying.error());
             }
-            case AgentEvent.Notice no -> {
-                n.put("level", no.level());
-                n.put("message", no.message());
+            case AgentEvent.Notice notice -> {
+                json.put("level", notice.level());
+                json.put("message", notice.message());
             }
-            case AgentEvent.RunFinished f -> {
-                n.put("stop_reason", f.stopReason().wire());
-                n.put("text", f.text());
-                n.put("turns", f.turns());
-                n.set("usage", DomainCodec.usage(f.usage()));
-                if (f.error() != null) {
-                    n.put("error", f.error());
+            case AgentEvent.RunFinished finished -> {
+                json.put("stop_reason", finished.stopReason().wire());
+                json.put("text", finished.text());
+                json.put("turns", finished.turns());
+                json.set("usage", DomainCodec.usage(finished.usage()));
+                if (finished.error() != null) {
+                    json.put("error", finished.error());
                 }
             }
         }
-        return n;
+        return json;
     }
 }

@@ -18,23 +18,28 @@ public final class HookInterceptor implements ToolInterceptor {
     }
 
     @Override
-    public ToolOutput intercept(ToolInvocation inv, Chain chain) {
-        for (AgentHook h : hooks) {
-            HookDecision hd = h.beforeTool(inv.call(), inv.tool(), inv.arguments(), inv.context());
-            if (hd != null && hd.blocked()) {
-                return ToolOutput.error("Blocked by policy hook: " + hd.message());
+    public ToolOutput intercept(ToolInvocation invocation, Chain chain) {
+        // 6. 执行前：任何一个钩子拦截就不再往下走；改写的参数交给后面的钩子和工具
+        for (AgentHook hook : hooks) {
+            HookDecision decision = hook.beforeTool(invocation.call(), invocation.tool(), invocation.arguments(), invocation.context());
+            if (decision == null) {
+                continue;
             }
-            if (hd != null && hd.rewrittenArguments() != null) {
-                inv.setArguments(hd.rewrittenArguments());
+            if (decision.blocked()) {
+                return ToolOutput.error("Blocked by policy hook: " + decision.message());
             }
-        }
-        ToolOutput out = chain.proceed(inv);
-        for (AgentHook h : hooks) {
-            ToolOutput o = h.afterTool(inv.call(), out, inv.context());
-            if (o != null) {
-                out = o;
+            if (decision.rewrittenArguments() != null) {
+                invocation.setArguments(decision.rewrittenArguments());
             }
         }
-        return out;
+        ToolOutput output = chain.proceed(invocation);
+        // 9. 执行后：钩子返回 null 表示不改
+        for (AgentHook hook : hooks) {
+            ToolOutput rewritten = hook.afterTool(invocation.call(), output, invocation.context());
+            if (rewritten != null) {
+                output = rewritten;
+            }
+        }
+        return output;
     }
 }

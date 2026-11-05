@@ -13,12 +13,12 @@ public final class BuiltinTools {
     }
 
     public static Map<String, Tool> all() {
-        Map<String, Tool> m = new LinkedHashMap<>();
-        for (Tool t : List.of(FileTools.readFile(), FileTools.writeFile(), FileTools.editFile(), FileTools.glob(),
-                FileTools.grep(), ShellTools.bash(), WebTools.webFetch(), InteractionTools.todoWrite(), InteractionTools.askUser())) {
-            m.put(t.name(), t);
+        Map<String, Tool> byName = new LinkedHashMap<>();
+        for (Tool tool : List.of(FileTools.readFile(), FileTools.writeFile(), FileTools.editFile(), SearchTools.glob(),
+                SearchTools.grep(), ShellTools.bash(), WebTools.webFetch(), InteractionTools.todoWrite(), InteractionTools.askUser())) {
+            byName.put(tool.name(), tool);
         }
-        return m;
+        return byName;
     }
 
     /** 按名称选取；names 为 null 表示全部。 */
@@ -27,12 +27,12 @@ public final class BuiltinTools {
         if (names == null) {
             return new ArrayList<>(all.values());
         }
-        List<Tool> out = new ArrayList<>();
-        for (String n : names) {
-            if (all.containsKey(n)) {
-                out.add(all.get(n));
+        List<Tool> selected = new ArrayList<>();
+        for (String name : names) {
+            if (all.containsKey(name)) {
+                selected.add(all.get(name));
             }
         }
-        return out;
+        return selected;
     }
 }

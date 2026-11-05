@@ -17,12 +17,18 @@ import java.util.stream.Collectors;
 /** 长期记忆工具：memory_save / memory_read / memory_search / memory_delete。 */
 public final class MemoryTools {
 
+    private static final int MAX_SEARCH_HITS = 10;
+
     private MemoryTools() {
     }
 
-    public static List<Tool> create(MemoryRepository repo) {
+    public static List<Tool> create(MemoryRepository repository) {
+        return List.of(save(repository), read(repository), search(repository), delete(repository));
+    }
+
+    private static Tool save(MemoryRepository repository) {
         List<String> types = Arrays.stream(MemoryType.values()).map(MemoryType::wire).toList();
-        Tool save = FunctionTool.builder("memory_save")
+        return FunctionTool.builder("memory_save")
                 .description("Save (create or overwrite) a long-term memory that persists across sessions.")
                 .schema(Schemas.object()
                         .string("name", "Short kebab-case identifier, e.g. \"user-prefers-concise-answers\".", true)
@@ -31,41 +37,50 @@ public final class MemoryTools {
                         .enumOf("type", types, "Memory category.", false)
                         .build())
                 .permission(PermissionLevel.ALLOW)
-                .handler((a, ctx) -> {
-                    MemoryEntry e = new MemoryEntry((String) a.get("name"), (String) a.get("description"),
-                            MemoryType.parse((String) a.get("type")), (String) a.get("content"), LocalDate.now());
-                    repo.save(e);
-                    return ToolOutput.text("Saved memory '" + e.name() + "'.");
+                .handler((args, ctx) -> {
+                    MemoryEntry entry = new MemoryEntry((String) args.get("name"), (String) args.get("description"),
+                            MemoryType.parse((String) args.get("type")), (String) args.get("content"), LocalDate.now());
+                    repository.save(entry);
+                    return ToolOutput.text("Saved memory '" + entry.name() + "'.");
                 }).build();
-        Tool read = FunctionTool.builder("memory_read")
+    }
+
+    private static Tool read(MemoryRepository repository) {
+        return FunctionTool.builder("memory_read")
                 .description("Read the full content of a saved memory.")
                 .schema(Schemas.object().string("name", "The memory name from the index.", true).build())
                 .readOnly(true)
-                .handler((a, ctx) -> {
-                    MemoryEntry e = repo.find((String) a.get("name"))
-                            .orElseThrow(() -> new ToolException("No memory named '" + a.get("name") + "'."));
-                    return ToolOutput.text("# " + e.name() + " [" + e.type().wire() + "]\n" + e.description() + "\n\n" + e.content());
+                .handler((args, ctx) -> {
+                    MemoryEntry entry = repository.find((String) args.get("name"))
+                            .orElseThrow(() -> new ToolException("No memory named '" + args.get("name") + "'."));
+                    return ToolOutput.text("# " + entry.name() + " [" + entry.type().wire() + "]\n" + entry.description()
+                            + "\n\n" + entry.content());
                 }).build();
-        Tool search = FunctionTool.builder("memory_search")
+    }
+
+    private static Tool search(MemoryRepository repository) {
+        return FunctionTool.builder("memory_search")
                 .description("Search saved memories by keywords.")
                 .schema(Schemas.object().string("query", "Space-separated keywords.", true).build())
                 .readOnly(true)
-                .handler((a, ctx) -> {
-                    List<MemoryEntry> hits = repo.search((String) a.get("query"), 10);
+                .handler((args, ctx) -> {
+                    List<MemoryEntry> hits = repository.search((String) args.get("query"), MAX_SEARCH_HITS);
                     return ToolOutput.text(hits.isEmpty() ? "No matching memories." : hits.stream()
-                            .map(e -> "- " + e.name() + " [" + e.type().wire() + "]: " + e.description())
+                            .map(entry -> "- " + entry.name() + " [" + entry.type().wire() + "]: " + entry.description())
                             .collect(Collectors.joining("\n")));
                 }).build();
-        Tool delete = FunctionTool.builder("memory_delete")
+    }
+
+    private static Tool delete(MemoryRepository repository) {
+        return FunctionTool.builder("memory_delete")
                 .description("Delete a memory that is wrong or no longer relevant.")
                 .schema(Schemas.object().string("name", "The memory name.", true).build())
                 .permission(PermissionLevel.ALLOW)
-                .handler((a, ctx) -> {
-                    if (!repo.delete((String) a.get("name"))) {
-                        throw new ToolException("No memory named '" + a.get("name") + "'.");
+                .handler((args, ctx) -> {
+                    if (!repository.delete((String) args.get("name"))) {
+                        throw new ToolException("No memory named '" + args.get("name") + "'.");
                     }
-                    return ToolOutput.text("Deleted memory '" + a.get("name") + "'.");
+                    return ToolOutput.text("Deleted memory '" + args.get("name") + "'.");
                 }).build();
-        return List.of(save, read, search, delete);
     }
 }

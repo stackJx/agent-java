@@ -80,6 +80,13 @@ public final class AnthropicModelGateway implements ModelGateway {
         }
     }
 
+    private static final int DEFAULT_MAX_TOKENS = 64_000;
+    private static final int ADAPTIVE_CONTEXT_WINDOW = 1_000_000;
+    private static final int LEGACY_CONTEXT_WINDOW = 200_000;
+    /** SDK 自己的 HTTP 重试次数（引擎外面还有一层 RetryingModelGateway）。 */
+    private static final int DEFAULT_SDK_RETRIES = 3;
+    private static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(10);
+
     private final AnthropicClient client;
     private final String model;
     private final int maxTokens;
@@ -93,31 +100,37 @@ public final class AnthropicModelGateway implements ModelGateway {
     private final Map<String, Object> extraBody;
     private final ObjectMapper sdkMapper = ObjectMappers.jsonMapper();
 
-    public AnthropicModelGateway(String model, Options o) {
+    /** options 里为 null 的字段按模型自动决定：新模型（自适应思考）默认开思考、effort=high、1M 上下文。 */
+    public AnthropicModelGateway(String model, Options options) {
         this.model = model == null || model.isBlank() ? DEFAULT_MODEL : model;
-        Options opt = o == null ? Options.defaults() : o;
+        Options given = options == null ? Options.defaults() : options;
         boolean adaptive = ADAPTIVE.matcher(this.model).find();
-        boolean firstParty = opt.baseUrl() == null && System.getenv("ANTHROPIC_BASE_URL") == null;
-        this.maxTokens = opt.maxTokens() != null ? opt.maxTokens() : 64_000;
-        this.contextWindow = opt.contextWindow() != null ? opt.contextWindow() : adaptive ? 1_000_000 : 200_000;
-        this.thinking = opt.thinking() != null ? opt.thinking() : adaptive;
-        this.thinkingDisplay = opt.thinkingDisplay() != null ? opt.thinkingDisplay() : "summarized";
-        this.effort = opt.effort() != null ? (opt.effort().isBlank() ? null : opt.effort()) : (adaptive ? "high" : null);
-        this.fallbacks = opt.fallbacks() != null ? opt.fallbacks() : firstParty && FALLBACK_MODELS.contains(this.model);
-        this.eagerInputStreaming = opt.eagerInputStreaming() != null ? opt.eagerInputStreaming() : firstParty;
-        this.promptCache = opt.promptCache() == null || opt.promptCache();
-        this.extraBody = opt.extraBody() == null ? Map.of() : opt.extraBody();
+        boolean firstParty = given.baseUrl() == null && System.getenv("ANTHROPIC_BASE_URL") == null;
+        this.maxTokens = given.maxTokens() != null ? given.maxTokens() : DEFAULT_MAX_TOKENS;
+        this.contextWindow = given.contextWindow() != null ? given.contextWindow()
+                : adaptive ? ADAPTIVE_CONTEXT_WINDOW : LEGACY_CONTEXT_WINDOW;
+        this.thinking = given.thinking() != null ? given.thinking() : adaptive;
+        this.thinkingDisplay = given.thinkingDisplay() != null ? given.thinkingDisplay() : "summarized";
+        this.effort = given.effort() != null ? (given.effort().isBlank() ? null : given.effort()) : (adaptive ? "high" : null);
+        this.fallbacks = given.fallbacks() != null ? given.fallbacks() : firstParty && FALLBACK_MODELS.contains(this.model);
+        this.eagerInputStreaming = given.eagerInputStreaming() != null ? given.eagerInputStreaming() : firstParty;
+        this.promptCache = given.promptCache() == null || given.promptCache();
+        this.extraBody = given.extraBody() == null ? Map.of() : given.extraBody();
+        this.client = createClient(given);
+    }
 
-        AnthropicOkHttpClient.Builder b = AnthropicOkHttpClient.builder().fromEnv();
-        if (opt.apiKey() != null && !opt.apiKey().isBlank()) {
-            b.apiKey(opt.apiKey());
+    /** 没配的项从环境变量读（ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等）。 */
+    private static AnthropicClient createClient(Options given) {
+        AnthropicOkHttpClient.Builder builder = AnthropicOkHttpClient.builder().fromEnv();
+        if (given.apiKey() != null && !given.apiKey().isBlank()) {
+            builder.apiKey(given.apiKey());
         }
-        if (opt.baseUrl() != null) {
-            b.baseUrl(opt.baseUrl());
+        if (given.baseUrl() != null) {
+            builder.baseUrl(given.baseUrl());
         }
-        b.maxRetries(opt.maxRetries() != null ? opt.maxRetries() : 3);
-        b.timeout(opt.timeout() != null ? opt.timeout() : Duration.ofMinutes(10));
-        this.client = b.build();
+        builder.maxRetries(given.maxRetries() != null ? given.maxRetries() : DEFAULT_SDK_RETRIES);
+        builder.timeout(given.timeout() != null ? given.timeout() : DEFAULT_TIMEOUT);
+        return builder.build();
     }
 
     @Override
@@ -142,48 +155,63 @@ public final class AnthropicModelGateway implements ModelGateway {
     // ------------------------------------------------------------------ 请求
 
     MessageCreateParams buildParams(ModelRequest request) {
-        MessageCreateParams.Builder b = MessageCreateParams.builder()
+        MessageCreateParams.Builder params = MessageCreateParams.builder()
                 .model(model)
                 .maxTokens(request.maxTokens() != null ? request.maxTokens() : maxTokens);
-        if (!request.system().isEmpty()) {
-            BetaTextBlockParam.Builder sys = BetaTextBlockParam.builder().text(request.system());
-            if (promptCache) {
-                sys.cacheControl(BetaCacheControlEphemeral.builder().build());
-            }
-            b.systemOfBetaTextBlockParams(List.of(sys.build()));
-        }
+        addSystemPrompt(params, request.system());
         if (promptCache) {
-            b.cacheControl(BetaCacheControlEphemeral.builder().build());
+            params.cacheControl(BetaCacheControlEphemeral.builder().build()); // 顶层自动缓存：断点跟着对话尾部走
         }
-        for (AnthropicWire.WireMessage wm : AnthropicWire.toWire(request.messages())) {
-            List<BetaContentBlockParam> blocks = new ArrayList<>();
-            for (JsonNode n : wm.content()) {
-                blocks.add(sdkMapper.convertValue(n, BetaContentBlockParam.class));
-            }
-            b.addMessage(wm.role() == Role.USER ? BetaMessageParam.ofUserOfContentBlockParams(blocks)
-                    : BetaMessageParam.ofAssistantOfContentBlockParams(blocks));
-        }
-        for (ToolSpec t : request.tools()) {
-            BetaTool.Builder tb = BetaTool.builder().name(t.name()).description(t.description())
-                    .inputSchema(sdkMapper.convertValue(t.inputSchema(), BetaTool.InputSchema.class));
-            if (eagerInputStreaming) {
-                tb.eagerInputStreaming(true);
-            }
-            b.addTool(tb.build());
-        }
+        addMessages(params, request);
+        addTools(params, request);
         if (thinking) {
-            b.thinking(BetaThinkingConfigAdaptive.builder().display(BetaThinkingConfigAdaptive.Display.of(thinkingDisplay)).build());
+            params.thinking(BetaThinkingConfigAdaptive.builder().display(BetaThinkingConfigAdaptive.Display.of(thinkingDisplay)).build());
         }
-        String eff = request.options().get("effort") instanceof String s ? s : effort;
-        if (eff != null) {
-            b.outputConfig(BetaOutputConfig.builder().effort(BetaOutputConfig.Effort.of(eff)).build());
+        String requestedEffort = request.options().get("effort") instanceof String value ? value : effort;
+        if (requestedEffort != null) {
+            params.outputConfig(BetaOutputConfig.builder().effort(BetaOutputConfig.Effort.of(requestedEffort)).build());
         }
         if (fallbacks) {
-            b.fallbacksDefault();
-            b.addBeta(FALLBACK_BETA);
+            params.fallbacksDefault();
+            params.addBeta(FALLBACK_BETA);
         }
-        extraBody.forEach((k, v) -> b.putAdditionalBodyProperty(k, JsonValue.from(v)));
-        return b.build();
+        extraBody.forEach((key, value) -> params.putAdditionalBodyProperty(key, JsonValue.from(value)));
+        return params.build();
+    }
+
+    /** 系统提示词单独打一个缓存断点：它在整个会话里不变，命中率最高。 */
+    private void addSystemPrompt(MessageCreateParams.Builder params, String systemPrompt) {
+        if (systemPrompt.isEmpty()) {
+            return;
+        }
+        BetaTextBlockParam.Builder system = BetaTextBlockParam.builder().text(systemPrompt);
+        if (promptCache) {
+            system.cacheControl(BetaCacheControlEphemeral.builder().build());
+        }
+        params.systemOfBetaTextBlockParams(List.of(system.build()));
+    }
+
+    /** 领域消息先由 AnthropicWire 转成请求 JSON，再交给 SDK 反序列化成参数对象。 */
+    private void addMessages(MessageCreateParams.Builder params, ModelRequest request) {
+        for (AnthropicWire.WireMessage message : AnthropicWire.toWire(request.messages())) {
+            List<BetaContentBlockParam> blocks = new ArrayList<>();
+            for (JsonNode block : message.content()) {
+                blocks.add(sdkMapper.convertValue(block, BetaContentBlockParam.class));
+            }
+            params.addMessage(message.role() == Role.USER ? BetaMessageParam.ofUserOfContentBlockParams(blocks)
+                    : BetaMessageParam.ofAssistantOfContentBlockParams(blocks));
+        }
+    }
+
+    private void addTools(MessageCreateParams.Builder params, ModelRequest request) {
+        for (ToolSpec spec : request.tools()) {
+            BetaTool.Builder tool = BetaTool.builder().name(spec.name()).description(spec.description())
+                    .inputSchema(sdkMapper.convertValue(spec.inputSchema(), BetaTool.InputSchema.class));
+            if (eagerInputStreaming) {
+                tool.eagerInputStreaming(true);
+            }
+            params.addTool(tool.build());
+        }
     }
 
     // ------------------------------------------------------------------ 流式调用
@@ -191,18 +219,13 @@ public final class AnthropicModelGateway implements ModelGateway {
     @Override
     public ModelResponse stream(ModelRequest request, ModelStreamListener listener, CancellationToken cancel) {
         MessageCreateParams params = buildParams(request);
-        BetaMessageAccumulator acc = BetaMessageAccumulator.create();
-        try (StreamResponse<BetaRawMessageStreamEvent> sr = client.beta().messages().createStreaming(params)) {
-            Runnable unregister = cancel.onCancel(sr::close);
+        BetaMessageAccumulator accumulator = BetaMessageAccumulator.create();
+        try (StreamResponse<BetaRawMessageStreamEvent> events = client.beta().messages().createStreaming(params)) {
+            Runnable unregister = cancel.onCancel(events::close);
             try {
-                for (BetaRawMessageStreamEvent ev : sr) {
-                    acc.accumulate(ev);
-                    ev.contentBlockStart().ifPresent(s -> s.contentBlock().toolUse()
-                            .ifPresent(tu -> listener.onToolCallStart(tu.id(), tu.name())));
-                    ev.contentBlockDelta().ifPresent(d -> {
-                        d.delta().text().ifPresent(t -> listener.onText(t.text()));
-                        d.delta().thinking().ifPresent(t -> listener.onThinking(t.thinking()));
-                    });
+                for (BetaRawMessageStreamEvent event : events) {
+                    accumulator.accumulate(event);
+                    forward(event, listener);
                 }
             } finally {
                 unregister.run();
@@ -216,43 +239,55 @@ public final class AnthropicModelGateway implements ModelGateway {
         if (cancel.isCancelled()) {
             throw new CancelledException();
         }
-        return toResponse(acc.message());
+        return toResponse(accumulator.message());
     }
 
-    private ModelResponse toResponse(BetaMessage msg) {
+    /** 增量事件实时回调给引擎：工具调用开始、文字、思考。 */
+    private static void forward(BetaRawMessageStreamEvent event, ModelStreamListener listener) {
+        event.contentBlockStart().ifPresent(start -> start.contentBlock().toolUse()
+                .ifPresent(toolUse -> listener.onToolCallStart(toolUse.id(), toolUse.name())));
+        event.contentBlockDelta().ifPresent(delta -> {
+            delta.delta().text().ifPresent(text -> listener.onText(text.text()));
+            delta.delta().thinking().ifPresent(thinking -> listener.onThinking(thinking.thinking()));
+        });
+    }
+
+    private ModelResponse toResponse(BetaMessage reply) {
         List<JsonNode> raw = new ArrayList<>();
-        for (BetaContentBlock block : msg.content()) {
+        for (BetaContentBlock block : reply.content()) {
             raw.add(rawBlock(block));
         }
         raw = AnthropicWire.applyFallbackEchoRule(raw);
         List<ContentBlock> content = AnthropicWire.fromWire(raw);
-        TokenUsage usage = new TokenUsage(msg.usage().inputTokens(), msg.usage().outputTokens(),
-                msg.usage().cacheReadInputTokens().orElse(0L), msg.usage().cacheCreationInputTokens().orElse(0L), 1);
-        String rawStop = msg.stopReason().map(r -> r.asString()).orElse(null);
+        TokenUsage usage = new TokenUsage(reply.usage().inputTokens(), reply.usage().outputTokens(),
+                reply.usage().cacheReadInputTokens().orElse(0L), reply.usage().cacheCreationInputTokens().orElse(0L), 1);
+        String rawStop = reply.stopReason().map(reason -> reason.asString()).orElse(null);
         StopReason stop = mapStop(rawStop);
         if (stop == StopReason.END_TURN && content.stream().anyMatch(ToolCall.class::isInstance)) {
             stop = StopReason.TOOL_USE;
         }
-        String details = msg.stopDetails().map(d -> {
-            try {
-                return sdkMapper.writeValueAsString(d);
-            } catch (Exception e) {
-                return String.valueOf(d);
-            }
-        }).orElse(null);
-        String modelName = msg.model().asString();
-        Message m = Message.assistant(content, new ProviderPayload(AnthropicWire.PROVIDER, modelName, Json.write(raw)));
-        return new ModelResponse(m, stop, usage, modelName, rawStop, details);
+        String details = reply.stopDetails().map(this::toJson).orElse(null);
+        String modelName = reply.model().asString();
+        Message message = Message.assistant(content, new ProviderPayload(AnthropicWire.PROVIDER, modelName, Json.write(raw)));
+        return new ModelResponse(message, stop, usage, modelName, rawStop, details);
+    }
+
+    private String toJson(Object value) {
+        try {
+            return sdkMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return String.valueOf(value);
+        }
     }
 
     /** 优先用 toParam()（请求格式，可直接回放）；不支持的块类型退回到响应 JSON。 */
     private JsonNode rawBlock(BetaContentBlock block) {
         try {
             return Json.read(sdkMapper.writeValueAsString(block.toParam()));
-        } catch (Exception e) {
+        } catch (Exception notConvertible) {
             try {
                 return Json.read(sdkMapper.writeValueAsString(block));
-            } catch (Exception e2) {
+            } catch (Exception unreadable) {
                 return Json.object().put("type", "unknown");
             }
         }
@@ -272,28 +307,30 @@ public final class AnthropicModelGateway implements ModelGateway {
         };
     }
 
+    /** SDK 异常 → 引擎认识的三类：超窗、可重试、不可重试（另有"输出无法解析"）。 */
     private static ModelException translate(RuntimeException e) {
-        if (e instanceof ModelException me) {
-            return me;
+        if (e instanceof ModelException already) {
+            return already;
         }
         if (e instanceof AnthropicInvalidDataException) {
             // eager_input_streaming 下无法解析的工具参数：没有完整的 tool_use 可回复，只能重发本轮
             return new MalformedOutputException("unparseable model output: " + e.getMessage(), e);
         }
-        if (e instanceof BadRequestException br) {
-            String msg = String.valueOf(br.getMessage());
-            String low = msg.toLowerCase();
-            if (low.contains("prompt is too long") || low.contains("context window") || low.contains("too many tokens")) {
-                return new ContextOverflowException(msg, e);
+        if (e instanceof BadRequestException badRequest) {
+            String message = String.valueOf(badRequest.getMessage());
+            String lower = message.toLowerCase();
+            if (lower.contains("prompt is too long") || lower.contains("context window") || lower.contains("too many tokens")) {
+                return new ContextOverflowException(message, e);
             }
-            return new ModelException(msg, false, 400, e);
+            return new ModelException(message, false, 400, e);
         }
         if (e instanceof RateLimitException || e instanceof InternalServerException || e instanceof AnthropicIoException
                 || e instanceof AnthropicRetryableException) {
-            return new ModelException(e.getMessage(), true, e instanceof AnthropicServiceException s ? s.statusCode() : null, e);
+            Integer status = e instanceof AnthropicServiceException service ? service.statusCode() : null;
+            return new ModelException(e.getMessage(), true, status, e);
         }
-        if (e instanceof AnthropicServiceException s) {
-            return new ModelException(s.getMessage(), s.statusCode() >= 500, s.statusCode(), e);
+        if (e instanceof AnthropicServiceException service) {
+            return new ModelException(service.getMessage(), service.statusCode() >= 500, service.statusCode(), e);
         }
         return new ModelException(e.getClass().getSimpleName() + ": " + e.getMessage(), false, null, e);
     }

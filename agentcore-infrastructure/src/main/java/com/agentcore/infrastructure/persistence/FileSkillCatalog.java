@@ -22,18 +22,18 @@ public final class FileSkillCatalog implements SkillCatalog {
     private final Map<String, Skill> skills = new LinkedHashMap<>();
 
     public FileSkillCatalog(List<Path> dirs) {
-        for (Path d : dirs) {
-            if (!Files.isDirectory(d)) {
+        for (Path dir : dirs) {
+            if (!Files.isDirectory(dir)) {
                 continue;
             }
-            try (Stream<Path> s = Files.list(d)) {
-                for (Path sub : s.sorted().toList()) {
-                    Path md = sub.resolve("SKILL.md");
-                    if (Files.isRegularFile(md)) {
-                        Frontmatter.Doc doc = Frontmatter.parse(Files.readString(md));
-                        String name = String.valueOf(doc.meta().getOrDefault("name", sub.getFileName().toString()));
-                        String desc = String.valueOf(doc.meta().getOrDefault("description", "")).strip();
-                        skills.putIfAbsent(name, new Skill(name, desc, sub.toAbsolutePath().toString()));
+            try (Stream<Path> children = Files.list(dir)) {
+                for (Path skillDir : children.sorted().toList()) {
+                    Path skillFile = skillDir.resolve("SKILL.md");
+                    if (Files.isRegularFile(skillFile)) {
+                        Frontmatter.Doc doc = Frontmatter.parse(Files.readString(skillFile));
+                        String name = String.valueOf(doc.meta().getOrDefault("name", skillDir.getFileName().toString()));
+                        String description = String.valueOf(doc.meta().getOrDefault("description", "")).strip();
+                        skills.putIfAbsent(name, new Skill(name, description, skillDir.toAbsolutePath().toString()));
                     }
                 }
             } catch (IOException e) {

@@ -33,14 +33,14 @@ public final class JdbcSchema {
                 continue;
             }
             List<String> statements = sections.getOrDefault(table, List.of());
-            store.query(c -> {
-                try (Statement st = c.createStatement()) {
+            store.query(conn -> {
+                try (Statement statement = conn.createStatement()) {
                     for (String sql : statements) {
-                        st.execute(sql);
+                        statement.execute(sql);
                     }
                 }
-                if (!c.getAutoCommit()) {
-                    c.commit();
+                if (!conn.getAutoCommit()) {
+                    conn.commit();
                 }
                 return null;
             });
@@ -63,9 +63,9 @@ public final class JdbcSchema {
 
     /** 用一条不返回数据的查询探测表是否存在（比 DatabaseMetaData 在各库间更一致）。 */
     static boolean exists(JdbcStore store, String table) {
-        try (Connection c = store.dataSource().getConnection(); Statement st = c.createStatement()) {
-            st.setMaxRows(1);
-            st.executeQuery("SELECT 1 FROM " + store.table(table) + " WHERE 1 = 0").close();
+        try (Connection conn = store.dataSource().getConnection(); Statement statement = conn.createStatement()) {
+            statement.setMaxRows(1);
+            statement.executeQuery("SELECT 1 FROM " + store.table(table) + " WHERE 1 = 0").close();
             return true;
         } catch (SQLException e) {
             return false;

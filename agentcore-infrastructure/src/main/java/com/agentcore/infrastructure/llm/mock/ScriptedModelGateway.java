@@ -51,26 +51,26 @@ public final class ScriptedModelGateway implements ModelGateway {
         this.contextWindow = contextWindow;
     }
 
-    public ScriptedModelGateway then(ModelResponse r) {
-        script.add(req -> r);
+    public ScriptedModelGateway then(ModelResponse response) {
+        script.add(request -> response);
         return this;
     }
 
-    public ScriptedModelGateway then(Function<ModelRequest, ModelResponse> f) {
-        script.add(f);
+    public ScriptedModelGateway then(Function<ModelRequest, ModelResponse> responder) {
+        script.add(responder);
         return this;
     }
 
     public ScriptedModelGateway thenThrow(RuntimeException e) {
-        script.add(req -> {
+        script.add(request -> {
             throw e;
         });
         return this;
     }
 
     /** 脚本用完后的默认回复。 */
-    public ScriptedModelGateway otherwise(Function<ModelRequest, ModelResponse> f) {
-        this.fallback = f;
+    public ScriptedModelGateway otherwise(Function<ModelRequest, ModelResponse> responder) {
+        this.fallback = responder;
         return this;
     }
 
@@ -103,37 +103,38 @@ public final class ScriptedModelGateway implements ModelGateway {
         if (next == null) {
             throw new ModelException("ScriptedModelGateway: script exhausted", false);
         }
-        ModelResponse resp = next.apply(request);
-        for (ContentBlock b : resp.message().content()) {
+        ModelResponse response = next.apply(request);
+        // 模拟流式：思考一次给完，文字每 16 个字符回调一次
+        for (ContentBlock block : response.message().content()) {
             cancel.throwIfCancelled();
-            switch (b) {
-                case ThinkingBlock t when t.text() != null -> listener.onThinking(t.text());
-                case TextBlock t -> {
-                    for (int i = 0; i < t.text().length(); i += 16) {
-                        listener.onText(t.text().substring(i, Math.min(t.text().length(), i + 16)));
+            switch (block) {
+                case ThinkingBlock thinking when thinking.text() != null -> listener.onThinking(thinking.text());
+                case TextBlock text -> {
+                    for (int i = 0; i < text.text().length(); i += 16) {
+                        listener.onText(text.text().substring(i, Math.min(text.text().length(), i + 16)));
                     }
                 }
-                case ToolCall c -> listener.onToolCallStart(c.id(), c.name());
+                case ToolCall call -> listener.onToolCallStart(call.id(), call.name());
                 default -> { }
             }
         }
-        if (resp.usage().isEmpty()) { // 没给用量时按请求内容估算，让上下文压缩逻辑可测
-            long in = TokenEstimator.estimate(request.system()) + TokenEstimator.estimate(String.valueOf(request.tools()))
+        if (response.usage().isEmpty()) { // 没给用量时按请求内容估算，让上下文压缩逻辑可测
+            long input = TokenEstimator.estimate(request.system()) + TokenEstimator.estimate(String.valueOf(request.tools()))
                     + TokenEstimator.estimate(request.messages());
-            resp = new ModelResponse(resp.message(), resp.stopReason(),
-                    new TokenUsage(in, TokenEstimator.estimate(resp.message()), 0, 0, 1), resp.model(), resp.rawStopReason(),
-                    resp.stopDetails());
+            TokenUsage estimated = new TokenUsage(input, TokenEstimator.estimate(response.message()), 0, 0, 1);
+            response = new ModelResponse(response.message(), response.stopReason(), estimated, response.model(),
+                    response.rawStopReason(), response.stopDetails());
         }
-        return resp;
+        return response;
     }
 
     // ------------------------------------------------------------------ 便捷构造
 
     /** call("read_file", "path", "a.txt", "limit", 10) */
-    public static ToolCall call(String name, Object... kv) {
+    public static ToolCall call(String name, Object... keyValues) {
         Map<String, Object> args = new LinkedHashMap<>();
-        for (int i = 0; i + 1 < kv.length; i += 2) {
-            args.put(String.valueOf(kv[i]), kv[i + 1]);
+        for (int i = 0; i + 1 < keyValues.length; i += 2) {
+            args.put(String.valueOf(keyValues[i]), keyValues[i + 1]);
         }
         return new ToolCall("call_" + IDS.incrementAndGet(), name, args, Json.write(args), null);
     }
@@ -151,7 +152,7 @@ public final class ScriptedModelGateway implements ModelGateway {
             content.add(new TextBlock(text));
         }
         content.addAll(List.of(calls));
-        StopReason s = stop != null ? stop : calls.length > 0 ? StopReason.TOOL_USE : StopReason.END_TURN;
-        return new ModelResponse(Message.assistant(content, null), s, TokenUsage.ZERO, "scripted", s.wire(), null);
+        StopReason reason = stop != null ? stop : calls.length > 0 ? StopReason.TOOL_USE : StopReason.END_TURN;
+        return new ModelResponse(Message.assistant(content, null), reason, TokenUsage.ZERO, "scripted", reason.wire(), null);
     }
 }

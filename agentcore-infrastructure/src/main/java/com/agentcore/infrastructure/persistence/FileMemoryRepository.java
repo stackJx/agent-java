@@ -32,8 +32,8 @@ public final class FileMemoryRepository implements MemoryRepository {
         if (!Files.isDirectory(root)) {
             return List.of();
         }
-        try (Stream<Path> s = Files.list(root)) {
-            return s.filter(p -> p.toString().endsWith(".md")).sorted().map(this::read).flatMap(Optional::stream).toList();
+        try (Stream<Path> files = Files.list(root)) {
+            return files.filter(file -> file.toString().endsWith(".md")).sorted().map(this::read).flatMap(Optional::stream).toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -41,56 +41,59 @@ public final class FileMemoryRepository implements MemoryRepository {
 
     @Override
     public Optional<MemoryEntry> find(String name) {
-        Path f = file(name);
-        if (Files.exists(f)) {
-            return read(f);
+        Path path = file(name);
+        if (Files.exists(path)) {
+            return read(path);
         }
-        return list().stream().filter(e -> e.name().equals(name)).findFirst();
+        // 文件名是 slug，手工建的文件名字可能对不上，再按 frontmatter 里的 name 找一遍
+        return list().stream().filter(entry -> entry.name().equals(name)).findFirst();
     }
 
-    private Optional<MemoryEntry> read(Path f) {
+    /** 一个 Markdown 文件：frontmatter 里是 name / description / type / updated，正文是记忆内容。 */
+    private Optional<MemoryEntry> read(Path path) {
         try {
-            Frontmatter.Doc d = Frontmatter.parse(Files.readString(f));
-            String fname = f.getFileName().toString();
-            String name = String.valueOf(d.meta().getOrDefault("name", fname.substring(0, fname.length() - 3)));
+            Frontmatter.Doc doc = Frontmatter.parse(Files.readString(path));
+            Map<String, Object> meta = doc.meta();
+            String fileName = path.getFileName().toString();
+            String name = String.valueOf(meta.getOrDefault("name", fileName.substring(0, fileName.length() - ".md".length())));
             LocalDate updated = null;
             try {
-                updated = d.meta().get("updated") == null ? null : LocalDate.parse(String.valueOf(d.meta().get("updated")));
-            } catch (RuntimeException ignored) {
+                updated = meta.get("updated") == null ? null : LocalDate.parse(String.valueOf(meta.get("updated")));
+            } catch (RuntimeException badDate) {
                 // 格式不对就忽略
             }
-            return Optional.of(new MemoryEntry(name, String.valueOf(d.meta().getOrDefault("description", "")),
-                    MemoryType.parse(String.valueOf(d.meta().getOrDefault("type", "note"))), d.body(), updated));
+            return Optional.of(new MemoryEntry(name, String.valueOf(meta.getOrDefault("description", "")),
+                    MemoryType.parse(String.valueOf(meta.getOrDefault("type", "note"))), doc.body(), updated));
         } catch (IOException e) {
             return Optional.empty();
         }
     }
 
     @Override
-    public void save(MemoryEntry e) {
+    public void save(MemoryEntry entry) {
         Map<String, Object> meta = new LinkedHashMap<>();
-        meta.put("name", e.name());
-        meta.put("description", e.description());
-        meta.put("type", e.type().wire());
-        meta.put("updated", e.updated().toString());
+        meta.put("name", entry.name());
+        meta.put("description", entry.description());
+        meta.put("type", entry.type().wire());
+        meta.put("updated", entry.updated().toString());
         try {
             Files.createDirectories(root);
-            Files.writeString(file(e.name()), Frontmatter.render(meta, e.content()));
-        } catch (IOException ex) {
-            throw new UncheckedIOException(ex);
+            Files.writeString(file(entry.name()), Frontmatter.render(meta, entry.content()));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 
     @Override
     public boolean delete(String name) {
-        Optional<MemoryEntry> e = find(name);
-        if (e.isEmpty()) {
+        Optional<MemoryEntry> entry = find(name);
+        if (entry.isEmpty()) {
             return false;
         }
         try {
-            return Files.deleteIfExists(file(e.get().name()));
-        } catch (IOException ex) {
-            throw new UncheckedIOException(ex);
+            return Files.deleteIfExists(file(entry.get().name()));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 }

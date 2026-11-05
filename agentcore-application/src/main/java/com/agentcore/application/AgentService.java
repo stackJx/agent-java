@@ -11,6 +11,7 @@ import com.agentcore.domain.conversation.model.Conversation;
 import com.agentcore.domain.conversation.model.ConversationId;
 import com.agentcore.domain.conversation.model.ConversationSummary;
 import com.agentcore.domain.conversation.repository.ConversationRepository;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,16 +59,16 @@ public final class AgentService {
 
     /** 新建会话。元数据在创建时一次写全（进入 ConversationStarted 事件），调用方传入的同名键优先。 */
     public Conversation startConversation(Map<String, String> metadata) {
-        Map<String, String> meta = new java.util.LinkedHashMap<>();
-        meta.put("model", engine.model().describe());
-        meta.put("agent", engine.definition().name());
-        meta.put("cwd", String.valueOf(engine.definition().settings().cwd()));
+        Map<String, String> merged = new LinkedHashMap<>();
+        merged.put("model", engine.model().describe());
+        merged.put("agent", engine.definition().name());
+        merged.put("cwd", String.valueOf(engine.definition().settings().cwd()));
         if (metadata != null) {
-            meta.putAll(metadata);
+            merged.putAll(metadata);
         }
-        Conversation c = Conversation.start(ConversationId.newId(), meta);
-        repository.save(c);
-        return c;
+        Conversation conversation = Conversation.start(ConversationId.newId(), merged);
+        repository.save(conversation);
+        return conversation;
     }
 
     /** 同步执行：阻塞直到运行结束。 */
@@ -76,13 +77,10 @@ public final class AgentService {
     }
 
     public RunResult chat(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener, RunControl control) {
-        Conversation c = load(conversationId);
-        // 同一会话已有运行时直接拒绝而不是排队：两个运行同时往一段历史里写，必然破坏工具调用的一一对应
-        if (running.putIfAbsent(conversationId, control) != null) {
-            throw new IllegalStateException("conversation " + conversationId + " already has a running task");
-        }
+        Conversation conversation = load(conversationId);
+        claim(conversationId, control);
         try {
-            return engine.run(c, input, listener, control);
+            return engine.run(conversation, input, listener, control);
         } finally {
             running.remove(conversationId, control);
         }
@@ -90,18 +88,16 @@ public final class AgentService {
 
     /** 异步执行（虚拟线程）：适合 Web 服务。 */
     public RunHandle chatAsync(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener) {
-        Conversation c = load(conversationId);
+        Conversation conversation = load(conversationId);
         RunControl control = new RunControl();
-        if (running.putIfAbsent(conversationId, control) != null) {
-            throw new IllegalStateException("conversation " + conversationId + " already has a running task");
-        }
+        claim(conversationId, control);
         // 每个运行一个虚拟线程：运行大部分时间在等模型和工具，虚拟线程几乎不占资源
         CompletableFuture<RunResult> future = new CompletableFuture<>();
         Thread.ofVirtual().name("agent-run-" + conversationId).start(() -> {
             try {
-                future.complete(engine.run(c, input, listener, control));
-            } catch (Throwable t) {
-                future.completeExceptionally(t);
+                future.complete(engine.run(conversation, input, listener, control));
+            } catch (Throwable failure) {
+                future.completeExceptionally(failure);
             } finally {
                 running.remove(conversationId, control);
             }
@@ -109,21 +105,31 @@ public final class AgentService {
         return new RunHandle(conversationId, control, future);
     }
 
+    /**
+     * 占住会话。同一会话已有运行时直接拒绝而不是排队：
+     * 两个运行同时往一段历史里写，必然破坏工具调用的一一对应。
+     */
+    private void claim(String conversationId, RunControl control) {
+        if (running.putIfAbsent(conversationId, control) != null) {
+            throw new IllegalStateException("conversation " + conversationId + " already has a running task");
+        }
+    }
+
     public boolean cancel(String conversationId) {
-        RunControl rc = running.get(conversationId);
-        if (rc == null) {
+        RunControl control = running.get(conversationId);
+        if (control == null) {
             return false;
         }
-        rc.cancel();
+        control.cancel();
         return true;
     }
 
     public boolean steer(String conversationId, String text) {
-        RunControl rc = running.get(conversationId);
-        if (rc == null) {
+        RunControl control = running.get(conversationId);
+        if (control == null) {
             return false;
         }
-        rc.steer(text);
+        control.steer(text);
         return true;
     }
 

@@ -80,7 +80,7 @@ public final class Json {
     }
 
     public static String text(JsonNode node, String field) {
-        JsonNode v = node == null ? null : node.get(field);
-        return v == null || v.isNull() ? null : v.asText();
+        JsonNode value = node == null ? null : node.get(field);
+        return value == null || value.isNull() ? null : value.asText();
     }
 }

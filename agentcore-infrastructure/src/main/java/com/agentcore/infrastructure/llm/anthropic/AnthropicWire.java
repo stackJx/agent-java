@@ -33,115 +33,125 @@ public final class AnthropicWire {
     }
 
     public static List<WireMessage> toWire(List<Message> messages) {
-        List<WireMessage> out = new ArrayList<>();
-        for (Message m : messages) {
-            if (m.role() == Role.ASSISTANT) {
-                List<JsonNode> content = new ArrayList<>();
-                if (m.providerPayload() != null && PROVIDER.equals(m.providerPayload().provider())) {
-                    Json.read(m.providerPayload().rawContentJson()).forEach(content::add); // 原样回放
-                } else {
-                    for (ContentBlock b : m.content()) {
-                        switch (b) {
-                            case TextBlock t when !t.text().isEmpty() -> content.add(text(t.text()));
-                            case ToolCall c -> {
-                                ObjectNode n = Json.object().put("type", "tool_use").put("id", c.id()).put("name", c.name());
-                                n.set("input", Json.tree(c.arguments()));
-                                content.add(n);
-                            }
-                            case ThinkingBlock t when PROVIDER.equals(t.provider()) -> {
-                                if (t.redacted()) {
-                                    content.add(Json.object().put("type", "redacted_thinking").put("data", t.redactedData()));
-                                } else if (t.signature() != null) {
-                                    content.add(Json.object().put("type", "thinking").put("thinking", t.text()).put("signature", t.signature()));
-                                }
-                            }
-                            default -> {
-                                // 其他厂商的思考内容没有签名，不能发给 Claude
-                            }
-                        }
-                    }
-                }
-                if (!content.isEmpty()) {
-                    out.add(new WireMessage(Role.ASSISTANT, content));
-                }
-                continue;
-            }
-            List<JsonNode> results = new ArrayList<>();
-            List<JsonNode> others = new ArrayList<>();
-            for (ContentBlock b : m.content()) {
-                switch (b) {
-                    case ToolResult r -> results.add(toolResult(r));
-                    case TextBlock t when !t.text().isEmpty() -> others.add(text(t.text()));
-                    case ImageBlock i -> others.add(image(i));
-                    default -> { }
-                }
-            }
-            List<JsonNode> content = new ArrayList<>(results); // tool_result 必须排在用户消息最前面
-            content.addAll(others);
+        List<WireMessage> wire = new ArrayList<>();
+        for (Message message : messages) {
+            List<JsonNode> content = message.role() == Role.ASSISTANT ? assistantContent(message) : userContent(message);
             if (!content.isEmpty()) {
-                out.add(new WireMessage(Role.USER, content));
+                wire.add(new WireMessage(message.role() == Role.ASSISTANT ? Role.ASSISTANT : Role.USER, content));
             }
         }
-        return out;
+        return wire;
+    }
+
+    /** 助手消息：Claude 自己产生的原样回放（签名、fallback 标记都在里面）；其他来源的按块转换。 */
+    private static List<JsonNode> assistantContent(Message message) {
+        List<JsonNode> content = new ArrayList<>();
+        if (message.providerPayload() != null && PROVIDER.equals(message.providerPayload().provider())) {
+            Json.read(message.providerPayload().rawContentJson()).forEach(content::add);
+            return content;
+        }
+        for (ContentBlock block : message.content()) {
+            switch (block) {
+                case TextBlock text when !text.text().isEmpty() -> content.add(text(text.text()));
+                case ToolCall call -> {
+                    ObjectNode toolUse = Json.object().put("type", "tool_use").put("id", call.id()).put("name", call.name());
+                    toolUse.set("input", Json.tree(call.arguments()));
+                    content.add(toolUse);
+                }
+                case ThinkingBlock thinking when PROVIDER.equals(thinking.provider()) -> {
+                    if (thinking.redacted()) {
+                        content.add(Json.object().put("type", "redacted_thinking").put("data", thinking.redactedData()));
+                    } else if (thinking.signature() != null) {
+                        content.add(Json.object().put("type", "thinking").put("thinking", thinking.text())
+                                .put("signature", thinking.signature()));
+                    }
+                }
+                default -> {
+                    // 其他厂商的思考内容没有签名，不能发给 Claude
+                }
+            }
+        }
+        return content;
+    }
+
+    /** 用户消息：tool_result 必须排在最前面，文字和图片放在后面。 */
+    private static List<JsonNode> userContent(Message message) {
+        List<JsonNode> results = new ArrayList<>();
+        List<JsonNode> others = new ArrayList<>();
+        for (ContentBlock block : message.content()) {
+            switch (block) {
+                case ToolResult result -> results.add(toolResult(result));
+                case TextBlock text when !text.text().isEmpty() -> others.add(text(text.text()));
+                case ImageBlock image -> others.add(image(image));
+                default -> { }
+            }
+        }
+        List<JsonNode> content = new ArrayList<>(results);
+        content.addAll(others);
+        return content;
     }
 
     static ObjectNode text(String text) {
         return Json.object().put("type", "text").put("text", text);
     }
 
-    static ObjectNode image(ImageBlock i) {
-        ObjectNode n = Json.object().put("type", "image");
-        ObjectNode src = n.putObject("source");
-        if (i.url() != null) {
-            src.put("type", "url").put("url", i.url());
+    static ObjectNode image(ImageBlock image) {
+        ObjectNode block = Json.object().put("type", "image");
+        ObjectNode source = block.putObject("source");
+        if (image.url() != null) {
+            source.put("type", "url").put("url", image.url());
         } else {
-            src.put("type", "base64").put("media_type", i.mediaType()).put("data", i.data());
+            source.put("type", "base64").put("media_type", image.mediaType()).put("data", image.data());
         }
-        return n;
+        return block;
     }
 
-    static ObjectNode toolResult(ToolResult r) {
-        ObjectNode n = Json.object().put("type", "tool_result").put("tool_use_id", r.toolCallId());
-        List<ContentBlock> parts = r.content().stream()
-                .filter(b -> !(b instanceof TextBlock t && t.text().isEmpty())).toList();
+    /** 工具结果：纯文字用字符串，带图片时用块数组；空结果给个占位。 */
+    static ObjectNode toolResult(ToolResult result) {
+        ObjectNode block = Json.object().put("type", "tool_result").put("tool_use_id", result.toolCallId());
+        List<ContentBlock> parts = result.content().stream()
+                .filter(part -> !(part instanceof TextBlock text && text.text().isEmpty())).toList();
         if (parts.isEmpty()) {
-            n.put("content", "(no output)");
+            block.put("content", "(no output)");
         } else if (parts.stream().allMatch(TextBlock.class::isInstance)) {
-            n.put("content", r.text());
+            block.put("content", result.text());
         } else {
-            ArrayNode arr = n.putArray("content");
-            for (ContentBlock b : parts) {
-                arr.add(b instanceof TextBlock t ? text(t.text()) : image((ImageBlock) b));
+            ArrayNode content = block.putArray("content");
+            for (ContentBlock part : parts) {
+                content.add(part instanceof TextBlock text ? text(text.text()) : image((ImageBlock) part));
             }
         }
-        if (r.isError()) {
-            n.put("is_error", true);
+        if (result.isError()) {
+            block.put("is_error", true);
         }
-        return n;
+        return block;
     }
 
     /** 响应中的原始块 → 领域内容块（server_tool_use、fallback 等只保留在原始载荷里）。 */
     public static List<ContentBlock> fromWire(List<JsonNode> raw) {
-        List<ContentBlock> out = new ArrayList<>();
-        for (JsonNode b : raw) {
-            switch (b.path("type").asText()) {
-                case "text" -> out.add(new TextBlock(b.path("text").asText("")));
-                case "thinking" -> out.add(new ThinkingBlock(b.path("thinking").asText(""), Json.text(b, "signature"),
+        List<ContentBlock> content = new ArrayList<>();
+        for (JsonNode block : raw) {
+            switch (block.path("type").asText()) {
+                case "text" -> content.add(new TextBlock(block.path("text").asText("")));
+                case "thinking" -> content.add(new ThinkingBlock(block.path("thinking").asText(""), Json.text(block, "signature"),
                         false, null, PROVIDER));
-                case "redacted_thinking" -> out.add(new ThinkingBlock("", null, true, Json.text(b, "data"), PROVIDER));
-                case "tool_use" -> {
-                    JsonNode input = b.get("input");
-                    if (input != null && input.isObject()) {
-                        out.add(new ToolCall(b.path("id").asText(), b.path("name").asText(), Json.toMap(input), null, null));
-                    } else {
-                        out.add(new ToolCall(b.path("id").asText(), b.path("name").asText(), null, null,
-                                "tool input is not a JSON object: " + input));
-                    }
-                }
+                case "redacted_thinking" -> content.add(new ThinkingBlock("", null, true, Json.text(block, "data"), PROVIDER));
+                case "tool_use" -> content.add(toolCall(block));
                 default -> { }
             }
         }
-        return out;
+        return content;
+    }
+
+    /** input 不是对象时不抛异常，记在 parseError 里让引擎回报给模型。 */
+    private static ToolCall toolCall(JsonNode block) {
+        JsonNode input = block.get("input");
+        String id = block.path("id").asText();
+        String name = block.path("name").asText();
+        if (input != null && input.isObject()) {
+            return new ToolCall(id, name, Json.toMap(input), null, null);
+        }
+        return new ToolCall(id, name, null, null, "tool input is not a JSON object: " + input);
     }
 
     /**
@@ -150,38 +160,39 @@ public final class AnthropicWire {
      * text、配对完整的服务端工具块和边界之后的内容原样保留。
      */
     public static List<JsonNode> applyFallbackEchoRule(List<JsonNode> blocks) {
-        int last = -1;
+        int lastFallback = -1;
         for (int i = 0; i < blocks.size(); i++) {
             if ("fallback".equals(blocks.get(i).path("type").asText())) {
-                last = i;
+                lastFallback = i;
             }
         }
-        if (last < 0) {
+        if (lastFallback < 0) {
             return blocks;
         }
-        Set<String> resultIds = new HashSet<>();
-        for (int i = 0; i < last; i++) {
-            JsonNode b = blocks.get(i);
-            if (b.path("type").asText().endsWith("_tool_result")) {
-                resultIds.add(b.path("tool_use_id").asText());
+        // 边界之前有结果的服务端工具调用才算"配对完整"
+        Set<String> answeredServerCalls = new HashSet<>();
+        for (int i = 0; i < lastFallback; i++) {
+            JsonNode block = blocks.get(i);
+            if (block.path("type").asText().endsWith("_tool_result")) {
+                answeredServerCalls.add(block.path("tool_use_id").asText());
             }
         }
         List<JsonNode> kept = new ArrayList<>();
         for (int i = 0; i < blocks.size(); i++) {
-            JsonNode b = blocks.get(i);
-            if (i < last) {
-                String t = b.path("type").asText();
-                boolean keep = switch (t) {
-                    case "text", "fallback" -> true;
-                    case "server_tool_use" -> resultIds.contains(b.path("id").asText());
-                    default -> t.endsWith("_tool_result");
-                };
-                if (!keep) {
-                    continue;
-                }
+            JsonNode block = blocks.get(i);
+            if (i >= lastFallback || keepBeforeFallback(block, answeredServerCalls)) {
+                kept.add(block);
             }
-            kept.add(b);
         }
         return kept;
+    }
+
+    private static boolean keepBeforeFallback(JsonNode block, Set<String> answeredServerCalls) {
+        String type = block.path("type").asText();
+        return switch (type) {
+            case "text", "fallback" -> true;
+            case "server_tool_use" -> answeredServerCalls.contains(block.path("id").asText());
+            default -> type.endsWith("_tool_result");
+        };
     }
 }

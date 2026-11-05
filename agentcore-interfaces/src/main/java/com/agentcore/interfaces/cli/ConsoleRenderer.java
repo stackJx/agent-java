@@ -10,97 +10,122 @@ import java.util.List;
 /** 把 Agent 事件渲染到终端：正文写 stdout，过程信息写 stderr。 */
 public final class ConsoleRenderer implements AgentEventListener {
 
+    /** 工具输出预览最多显示几行。 */
+    private static final int PREVIEW_LINES = 3;
+    private static final int MAX_LINE_CHARS = 160;
+
+    /** 当前正在往哪个流里连续输出，切换时先换行，避免正文和思考挤在同一行。 */
+    private enum Mode { TEXT, THINKING }
+
     private final PrintStream out;
     private final PrintStream info;
-    private final Ansi a;
+    private final Ansi ansi;
     private final boolean showThinking;
-    private String mode; // text / thinking / null
+    private Mode mode; // null 表示刚输出完一整行
 
     public ConsoleRenderer(PrintStream out, PrintStream info, Ansi ansi, boolean showThinking) {
         this.out = out;
         this.info = info;
-        this.a = ansi;
+        this.ansi = ansi;
         this.showThinking = showThinking;
     }
 
-    private void switchTo(String next) {
-        if (mode != null && !mode.equals(next)) {
-            (mode.equals("text") ? out : info).println();
+    private void switchTo(Mode next) {
+        if (mode != null && mode != next) {
+            (mode == Mode.TEXT ? out : info).println();
         }
         mode = next;
     }
 
-    public static String tokens(long n) {
-        return n >= 1000 ? String.format("%.1fk", n / 1000.0) : String.valueOf(n);
+    /** 1234 → "1.2k"。 */
+    public static String tokens(long count) {
+        return count >= 1000 ? String.format("%.1fk", count / 1000.0) : String.valueOf(count);
     }
 
     @Override
-    public void onEvent(AgentEvent e) {
-        switch (e) {
-            case AgentEvent.TextDelta t -> {
-                switchTo("text");
-                out.print(t.text());
+    public void onEvent(AgentEvent event) {
+        switch (event) {
+            case AgentEvent.TextDelta delta -> {
+                switchTo(Mode.TEXT);
+                out.print(delta.text());
                 out.flush();
             }
-            case AgentEvent.ThinkingDelta t -> {
+            case AgentEvent.ThinkingDelta delta -> {
                 if (showThinking) {
-                    if (!"thinking".equals(mode)) {
-                        switchTo("thinking");
-                        info.print(a.dim("✻ "));
+                    if (mode != Mode.THINKING) {
+                        switchTo(Mode.THINKING);
+                        info.print(ansi.dim("✻ "));
                     }
-                    info.print(a.dim(t.text()));
+                    info.print(ansi.dim(delta.text()));
                     info.flush();
                 }
             }
-            case AgentEvent.ToolStarted t -> {
+            case AgentEvent.ToolStarted started -> {
                 switchTo(null);
                 info.println();
-                info.println(a.cyan("⏺") + " " + a.bold(Texts.clip(t.summary(), 160)));
+                info.println(ansi.cyan("⏺") + " " + ansi.bold(Texts.clip(started.summary(), MAX_LINE_CHARS)));
             }
-            case AgentEvent.ToolProgress p -> info.println(a.dim("  ⎿ " + Texts.clip(p.message(), 160)));
-            case AgentEvent.ToolFinished f -> {
+            case AgentEvent.ToolProgress progress -> info.println(ansi.dim("  ⎿ " + Texts.clip(progress.message(), MAX_LINE_CHARS)));
+            case AgentEvent.ToolFinished finished -> {
                 switchTo(null);
-                List<String> lines = f.output().strip().lines().toList();
-                if (lines.isEmpty()) {
-                    lines = List.of("(no output)");
-                }
-                StringBuilder sb = new StringBuilder("  ⎿ ");
-                for (int i = 0; i < Math.min(3, lines.size()); i++) {
-                    sb.append(i > 0 ? "\n    " : "").append(Texts.clip(lines.get(i), 160));
-                }
-                if (lines.size() > 3) {
-                    sb.append(" … (+").append(lines.size() - 3).append(" lines)");
-                }
-                sb.append(String.format("  [%.1fs]", f.durationMillis() / 1000.0));
-                info.println(f.isError() ? a.red(sb.toString()) : a.dim(sb.toString()));
+                String preview = toolPreview(finished);
+                info.println(finished.isError() ? ansi.red(preview) : ansi.dim(preview));
             }
-            case AgentEvent.PermissionDecided p -> {
-                if (p.decision().equals("deny")) {
-                    info.println(a.yellow("  ✗ " + p.tool() + ": " + p.reason()));
+            case AgentEvent.PermissionDecided decided -> {
+                if (decided.decision().equals("deny")) {
+                    info.println(ansi.yellow("  ✗ " + decided.tool() + ": " + decided.reason()));
                 }
             }
-            case AgentEvent.Compacted c -> {
+            case AgentEvent.Compacted compacted -> {
                 switchTo(null);
-                info.println(a.yellow("\n✂ 上下文已压缩：~" + tokens(c.tokensBefore()) + " → ~" + tokens(c.tokensAfter()) + " tokens"));
+                info.println(ansi.yellow("\n✂ 上下文已压缩：~" + tokens(compacted.tokensBefore()) + " → ~" + tokens(compacted.tokensAfter())
+                        + " tokens"));
             }
-            case AgentEvent.Retrying r -> {
+            case AgentEvent.Retrying retrying -> {
                 switchTo(null);
-                info.println(a.yellow("\n↻ 第 " + r.attempt() + " 次重试（" + r.delayMillis() / 1000.0 + "s 后）：" + Texts.clip(r.error(), 200)));
+                info.println(ansi.yellow("\n↻ 第 " + retrying.attempt() + " 次重试（" + retrying.delayMillis() / 1000.0 + "s 后）："
+                        + Texts.clip(retrying.error(), 200)));
             }
-            case AgentEvent.Notice n -> {
+            case AgentEvent.Notice notice -> {
                 switchTo(null);
-                String msg = "\n[" + n.level() + "] " + n.message();
-                info.println(n.level().equals("error") ? a.red(msg) : n.level().equals("warning") ? a.yellow(msg) : a.dim(msg));
+                String line = "\n[" + notice.level() + "] " + notice.message();
+                info.println(switch (notice.level()) {
+                    case "error" -> ansi.red(line);
+                    case "warning" -> ansi.yellow(line);
+                    default -> ansi.dim(line);
+                });
             }
-            case AgentEvent.RunFinished f -> {
+            case AgentEvent.RunFinished finished -> {
                 switchTo(null);
-                TokenUsage u = f.usage();
-                String cache = u.cacheReadTokens() > 0 ? "（缓存命中 " + tokens(u.cacheReadTokens()) + "）" : "";
-                info.println(a.dim("\n[" + f.stopReason().wire() + " · " + f.turns() + " 轮 · 输入 " + tokens(u.totalInput()) + cache
-                        + " · 输出 " + tokens(u.outputTokens()) + "]"));
+                info.println(ansi.dim(runSummary(finished)));
             }
             default -> { }
         }
         info.flush();
+    }
+
+    /** 工具输出的前几行 + 用时，例如 "  ⎿ line1\n    line2 … (+12 lines)  [0.3s]"。 */
+    private static String toolPreview(AgentEvent.ToolFinished finished) {
+        List<String> lines = finished.output().strip().lines().toList();
+        if (lines.isEmpty()) {
+            lines = List.of("(no output)");
+        }
+        StringBuilder preview = new StringBuilder("  ⎿ ");
+        for (int i = 0; i < Math.min(PREVIEW_LINES, lines.size()); i++) {
+            preview.append(i > 0 ? "\n    " : "").append(Texts.clip(lines.get(i), MAX_LINE_CHARS));
+        }
+        if (lines.size() > PREVIEW_LINES) {
+            preview.append(" … (+").append(lines.size() - PREVIEW_LINES).append(" lines)");
+        }
+        preview.append(String.format("  [%.1fs]", finished.durationMillis() / 1000.0));
+        return preview.toString();
+    }
+
+    /** 例如 "[end_turn · 3 轮 · 输入 12.3k（缓存命中 10.0k） · 输出 1.2k]"。 */
+    private static String runSummary(AgentEvent.RunFinished finished) {
+        TokenUsage usage = finished.usage();
+        String cache = usage.cacheReadTokens() > 0 ? "（缓存命中 " + tokens(usage.cacheReadTokens()) + "）" : "";
+        return "\n[" + finished.stopReason().wire() + " · " + finished.turns() + " 轮 · 输入 " + tokens(usage.totalInput()) + cache
+                + " · 输出 " + tokens(usage.outputTokens()) + "]";
     }
 }

@@ -43,6 +43,11 @@ public final class SystemPromptBuilder {
 
     public static final List<String> PROJECT_INSTRUCTION_FILES = List.of("AGENTS.md", "AGENT.md", ".agentcore/instructions.md");
 
+    /** 每个项目说明文件最多放进提示词的字符数。 */
+    private static final int MAX_PROJECT_FILE_CHARS = 20_000;
+    /** 记忆索引最多列出几条。 */
+    private static final int MAX_MEMORY_INDEX_ENTRIES = 200;
+
     private String name = "agentcore";
     private String basePrompt = DEFAULT_PROMPT;
     private Path cwd;
@@ -53,19 +58,19 @@ public final class SystemPromptBuilder {
     private SkillCatalog skills;
     private final List<String> sections = new ArrayList<>();
 
-    public SystemPromptBuilder name(String n) {
-        this.name = n;
+    public SystemPromptBuilder name(String name) {
+        this.name = name;
         return this;
     }
 
     /** 整体替换基础提示词（null 表示使用默认）。 */
-    public SystemPromptBuilder basePrompt(String p) {
-        this.basePrompt = p == null ? DEFAULT_PROMPT : p;
+    public SystemPromptBuilder basePrompt(String prompt) {
+        this.basePrompt = prompt == null ? DEFAULT_PROMPT : prompt;
         return this;
     }
 
-    public SystemPromptBuilder cwd(Path p) {
-        this.cwd = p;
+    public SystemPromptBuilder cwd(Path cwd) {
+        this.cwd = cwd;
         return this;
     }
 
@@ -79,24 +84,24 @@ public final class SystemPromptBuilder {
         return this;
     }
 
-    public SystemPromptBuilder instructions(String i) {
-        this.instructions = i == null ? "" : i;
+    public SystemPromptBuilder instructions(String instructions) {
+        this.instructions = instructions == null ? "" : instructions;
         return this;
     }
 
-    public SystemPromptBuilder memory(MemoryRepository m) {
-        this.memory = m;
+    public SystemPromptBuilder memory(MemoryRepository memory) {
+        this.memory = memory;
         return this;
     }
 
-    public SystemPromptBuilder skills(SkillCatalog s) {
-        this.skills = s;
+    public SystemPromptBuilder skills(SkillCatalog skills) {
+        this.skills = skills;
         return this;
     }
 
-    public SystemPromptBuilder section(String s) {
-        if (s != null && !s.isBlank()) {
-            sections.add(s.strip());
+    public SystemPromptBuilder section(String section) {
+        if (section != null && !section.isBlank()) {
+            sections.add(section.strip());
         }
         return this;
     }
@@ -112,9 +117,9 @@ public final class SystemPromptBuilder {
             parts.add("# Instructions\n" + instructions.strip());
         }
         if (projectInstructions && cwd != null) {
-            String proj = loadProjectInstructions(cwd);
-            if (!proj.isEmpty()) {
-                parts.add("# Project instructions\n" + proj);
+            String project = loadProjectInstructions(cwd);
+            if (!project.isEmpty()) {
+                parts.add("# Project instructions\n" + project);
             }
         }
         if (memory != null) {
@@ -128,26 +133,29 @@ public final class SystemPromptBuilder {
     }
 
     public static String loadProjectInstructions(Path cwd) {
-        List<String> out = new ArrayList<>();
-        for (String f : PROJECT_INSTRUCTION_FILES) {
-            Path p = cwd.resolve(f);
-            if (Files.isRegularFile(p)) {
-                try {
-                    String text = Files.readString(p).strip();
-                    if (!text.isEmpty()) {
-                        out.add("Contents of " + p + ":\n\n" + (text.length() > 20_000 ? text.substring(0, 20_000) : text));
-                    }
-                } catch (IOException ignored) {
-                    // 读不到就跳过
+        List<String> found = new ArrayList<>();
+        for (String fileName : PROJECT_INSTRUCTION_FILES) {
+            Path file = cwd.resolve(fileName);
+            if (!Files.isRegularFile(file)) {
+                continue;
+            }
+            try {
+                String text = Files.readString(file).strip();
+                if (!text.isEmpty()) {
+                    String clipped = text.length() > MAX_PROJECT_FILE_CHARS ? text.substring(0, MAX_PROJECT_FILE_CHARS) : text;
+                    found.add("Contents of " + file + ":\n\n" + clipped);
                 }
+            } catch (IOException unreadable) {
+                // 读不到就跳过
             }
         }
-        return String.join("\n\n", out);
+        return String.join("\n\n", found);
     }
 
     public static String memorySection(List<MemoryEntry> entries) {
-        String index = entries.isEmpty() ? "(no memories yet)" : entries.stream().limit(200)
-                .map(e -> "- " + e.name() + " [" + e.type().wire() + "]: " + e.description()).collect(Collectors.joining("\n"));
+        String index = entries.isEmpty() ? "(no memories yet)" : entries.stream().limit(MAX_MEMORY_INDEX_ENTRIES)
+                .map(entry -> "- " + entry.name() + " [" + entry.type().wire() + "]: " + entry.description())
+                .collect(Collectors.joining("\n"));
         return "# Long-term memory\n"
                 + "You have a persistent memory that survives across sessions. Index of saved memories:\n" + index + "\n\n"
                 + "Use memory_read to open a memory when it looks relevant. Use memory_save to record durable, non-obvious facts "
@@ -156,9 +164,9 @@ public final class SystemPromptBuilder {
                 + "can be re-derived from files. Update an existing memory instead of creating a duplicate; delete memories that are wrong.";
     }
 
-    public static String skillsSection(List<Skill> list) {
+    public static String skillsSection(List<Skill> skills) {
         return "# Skills\nSkills are packaged instructions for specific kinds of tasks. When a task matches a skill's description, "
                 + "call load_skill with its name before starting, then follow its instructions.\n"
-                + list.stream().map(s -> "- " + s.name() + ": " + s.description()).collect(Collectors.joining("\n"));
+                + skills.stream().map(skill -> "- " + skill.name() + ": " + skill.description()).collect(Collectors.joining("\n"));
     }
 }

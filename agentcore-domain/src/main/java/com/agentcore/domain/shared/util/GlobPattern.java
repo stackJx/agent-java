@@ -20,28 +20,28 @@ public final class GlobPattern {
     }
 
     static Pattern compile(String glob) {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder regex = new StringBuilder();
         for (int i = 0; i < glob.length(); i++) {
-            char c = glob.charAt(i);
-            switch (c) {
-                case '*' -> sb.append(".*");
-                case '?' -> sb.append('.');
+            char ch = glob.charAt(i);
+            switch (ch) {
+                case '*' -> regex.append(".*");
+                case '?' -> regex.append('.');
                 case '[' -> {
                     int end = glob.indexOf(']', i + 1);
                     if (end < 0) {
-                        sb.append("\\[");
+                        regex.append("\\[");
                     } else {
                         String body = glob.substring(i + 1, end);
                         if (body.startsWith("!")) {
                             body = "^" + body.substring(1);
                         }
-                        sb.append('[').append(body.replace("\\", "\\\\")).append(']');
+                        regex.append('[').append(body.replace("\\", "\\\\")).append(']');
                         i = end;
                     }
                 }
-                default -> sb.append(Pattern.quote(String.valueOf(c)));
+                default -> regex.append(Pattern.quote(String.valueOf(ch)));
             }
         }
-        return Pattern.compile(sb.toString(), Pattern.DOTALL);
+        return Pattern.compile(regex.toString(), Pattern.DOTALL);
     }
 }

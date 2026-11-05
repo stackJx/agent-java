@@ -12,12 +12,12 @@ public record PermissionRule(String tool, String pattern) {
     private static final Pattern SYNTAX = Pattern.compile("\\s*([^()\\s]+)\\s*(?:\\((.*)\\))?\\s*");
 
     public static PermissionRule parse(String text) {
-        Matcher m = SYNTAX.matcher(text);
-        if (!m.matches()) {
+        Matcher matcher = SYNTAX.matcher(text);
+        if (!matcher.matches()) {
             throw new IllegalArgumentException("invalid permission rule: " + text);
         }
-        String p = m.group(2);
-        return new PermissionRule(m.group(1), p == null || p.isEmpty() || p.equals("*") ? null : p);
+        String pattern = matcher.group(2);
+        return new PermissionRule(matcher.group(1), pattern == null || pattern.isEmpty() || pattern.equals("*") ? null : pattern);
     }
 
     @Override

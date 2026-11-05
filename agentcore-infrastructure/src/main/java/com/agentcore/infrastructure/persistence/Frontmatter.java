@@ -18,24 +18,25 @@ public final class Frontmatter {
     static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory()
             .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
             .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES));
-    private static final Pattern FM = Pattern.compile("\\A---\\s*\\n(.*?)\\n---\\s*\\n?", Pattern.DOTALL);
+    /** 文件开头 "---" 与 "---" 之间的 YAML。 */
+    private static final Pattern HEADER = Pattern.compile("\\A---\\s*\\n(.*?)\\n---\\s*\\n?", Pattern.DOTALL);
 
     private Frontmatter() {
     }
 
     public static Doc parse(String text) {
-        Matcher m = FM.matcher(text);
-        if (!m.find()) {
+        Matcher header = HEADER.matcher(text);
+        if (!header.find()) {
             return new Doc(Map.of(), text);
         }
         Map<String, Object> meta;
         try {
-            meta = YAML.readValue(m.group(1), new TypeReference<LinkedHashMap<String, Object>>() {
+            meta = YAML.readValue(header.group(1), new TypeReference<LinkedHashMap<String, Object>>() {
             });
-        } catch (Exception e) {
+        } catch (Exception invalidYaml) {
             meta = Map.of();
         }
-        return new Doc(meta == null ? Map.of() : meta, text.substring(m.end()));
+        return new Doc(meta == null ? Map.of() : meta, text.substring(header.end()));
     }
 
     public static String render(Map<String, Object> meta, String body) {

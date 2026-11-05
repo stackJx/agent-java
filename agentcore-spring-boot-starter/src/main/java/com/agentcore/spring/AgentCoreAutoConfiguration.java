@@ -61,6 +61,10 @@ import org.springframework.context.annotation.Bean;
 @EnableConfigurationProperties(AgentCoreProperties.class)
 public class AgentCoreAutoConfiguration {
 
+    private static final int MAX_RETRIES = 3;
+    private static final Duration RETRY_BASE_DELAY = Duration.ofSeconds(2);
+    private static final int MAX_MALFORMED_RETRIES = 2;
+
     /** 用于上下文压缩的独立模型（可选）。 */
     public record AgentSummarizer(ModelGateway gateway) implements AutoCloseable {
         @Override
@@ -78,7 +82,8 @@ public class AgentCoreAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public ModelGateway agentModelGateway(AgentCoreProperties props, ModelGatewayFactory factory) {
-        String spec = props.getModel() != null && !props.getModel().isBlank() ? props.getModel() : ModelGatewayFactory.defaultModel(System::getenv);
+        String configured = props.getModel();
+        String spec = configured != null && !configured.isBlank() ? configured : ModelGatewayFactory.defaultModel(System::getenv);
         if (spec == null) {
             throw new IllegalStateException("agentcore: 没有配置模型。请设置 agentcore.model（例如 deepseek:deepseek-v4-pro），"
                     + "或设置 ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY 环境变量，或自定义 ModelGateway Bean。");
@@ -112,25 +117,25 @@ public class AgentCoreAutoConfiguration {
     @ConditionalOnMissingBean
     public SkillCatalog agentSkillCatalog(AgentCoreProperties props) {
         List<Path> dirs = props.getSkills().isEnabled()
-                ? props.getSkills().getDirs().stream().map(d -> resolve(props, d)).toList() : List.of();
+                ? props.getSkills().getDirs().stream().map(dir -> resolve(props, dir)).toList() : List.of();
         return new FileSkillCatalog(dirs);
     }
 
     @Bean
     @ConditionalOnMissingBean
     public McpServerManager agentMcpServers(AgentCoreProperties props) {
-        McpServerManager m = new McpServerManager(props.mcpConfigs(), props.workingDirectory());
-        m.start();
-        m.errors().forEach((k, v) -> System.getLogger(AgentCoreAutoConfiguration.class.getName())
-                .log(System.Logger.Level.WARNING, "MCP server " + k + " failed to start: " + v));
-        return m;
+        McpServerManager servers = new McpServerManager(props.mcpConfigs(), props.workingDirectory());
+        servers.start();
+        servers.errors().forEach((server, error) -> System.getLogger(AgentCoreAutoConfiguration.class.getName())
+                .log(System.Logger.Level.WARNING, "MCP server " + server + " failed to start: " + error));
+        return servers;
     }
 
     @Bean
     @ConditionalOnMissingBean
     public PermissionPolicy agentPermissionPolicy(AgentCoreProperties props) {
-        AgentCoreProperties.Permissions p = props.getPermissions();
-        return RulePermissionPolicy.of(p.getMode(), p.getAllow(), p.getDeny(), p.getAsk());
+        AgentCoreProperties.Permissions permissions = props.getPermissions();
+        return RulePermissionPolicy.of(permissions.getMode(), permissions.getAllow(), permissions.getDeny(), permissions.getAsk());
     }
 
     /** 子 Agent 工具（subagent-max-depth 为 0 或 tools 白名单不含 task 时不会注册进工具表）。 */
@@ -138,8 +143,8 @@ public class AgentCoreAutoConfiguration {
     @ConditionalOnMissingBean
     public TaskTool agentTaskTool(AgentCoreProperties props, ModelGatewayFactory factory) {
         Map<String, SubAgentProfile> profiles = new LinkedHashMap<>();
-        props.getSubagents().forEach((name, s) -> profiles.put(name, new SubAgentProfile(name, s.getDescription(),
-                s.getSystemPrompt(), s.getInstructions(), s.getTools(), s.getModel(), s.getMaxTurns())));
+        props.getSubagents().forEach((name, config) -> profiles.put(name, new SubAgentProfile(name, config.getDescription(),
+                config.getSystemPrompt(), config.getInstructions(), config.getTools(), config.getModel(), config.getMaxTurns())));
         return new TaskTool(profiles, factory);
     }
 
@@ -149,7 +154,7 @@ public class AgentCoreAutoConfiguration {
                                           McpServerManager mcp, ObjectProvider<TaskTool> taskTool) {
         ToolRegistry registry = new ToolRegistry();
         registry.registerAll(BuiltinTools.select(props.getTools()));
-        memory.ifAvailable(m -> registry.registerAll(MemoryTools.create(m)));
+        memory.ifAvailable(repository -> registry.registerAll(MemoryTools.create(repository)));
         if (!skills.list().isEmpty()) {
             registry.register(SkillTool.create(skills));
         }
@@ -174,23 +179,19 @@ public class AgentCoreAutoConfiguration {
                                    ObjectProvider<AgentHook> hooks, ObjectProvider<ToolInterceptor> interceptors,
                                    ObjectProvider<TaskTool> taskTool,
                                    ObjectProvider<AgentSummarizer> summarizer) {
-        AgentCoreProperties.Agent a = props.getAgent();
-        Path cwd = props.workingDirectory();
+        AgentCoreProperties.Agent agent = props.getAgent();
         SystemPromptBuilder prompt = new SystemPromptBuilder()
-                .name(a.getName())
+                .name(agent.getName())
                 .basePrompt(systemPrompt(props))
-                .cwd(cwd)
-                .instructions(a.getInstructions())
-                .projectInstructions(a.isProjectInstructions())
+                .cwd(props.workingDirectory())
+                .instructions(agent.getInstructions())
+                .projectInstructions(agent.isProjectInstructions())
                 .skills(skills)
                 .section(mcp.promptSection());
         memory.ifAvailable(prompt::memory);
 
-        EngineSettings settings = new EngineSettings(cwd, a.getMaxTurns(), a.getMaxToolConcurrency(), 3, Duration.ofSeconds(2), 2,
-                props.getSubagentMaxDepth());
-        AgentCoreProperties.Context c = props.getContext();
-        AgentEngine.Builder b = AgentEngine.builder()
-                .definition(new AgentDefinition(a.getName(), prompt.build(), settings))
+        AgentEngine.Builder builder = AgentEngine.builder()
+                .definition(new AgentDefinition(agent.getName(), prompt.build(), engineSettings(props)))
                 .model(model)
                 .tools(tools)
                 .permissions(permissions)
@@ -198,11 +199,11 @@ public class AgentCoreAutoConfiguration {
                 .hooks(hooks.orderedStream().toList())
                 .interceptors(interceptors.orderedStream().toList())
                 .repository(repository)
-                .compactor(new ConversationCompactor(new CompactionSettings(c.getThreshold(), c.getMaxTokens(), 8000, 120_000)));
-        summarizer.ifAvailable(s -> b.summarizer(s.gateway()));
-        prompter.ifAvailable(p -> b.service(UserPrompter.class, p));
-        AgentEngine engine = b.build();
-        taskTool.ifAvailable(t -> t.attach(engine));
+                .compactor(compactor(props.getContext()));
+        summarizer.ifAvailable(separate -> builder.summarizer(separate.gateway()));
+        prompter.ifAvailable(userPrompter -> builder.service(UserPrompter.class, userPrompter));
+        AgentEngine engine = builder.build();
+        taskTool.ifAvailable(task -> task.attach(engine)); // task 工具要从父引擎派生子引擎
         return engine;
     }
 
@@ -210,6 +211,19 @@ public class AgentCoreAutoConfiguration {
     @ConditionalOnMissingBean
     public AgentService agentService(AgentEngine engine, ConversationRepository repository) {
         return new AgentService(engine, repository);
+    }
+
+    /** 重试相关的几项不对外暴露配置，用固定值：最多重试 3 次、首次等 2 秒、输出无法解析时重发 2 次。 */
+    private static EngineSettings engineSettings(AgentCoreProperties props) {
+        AgentCoreProperties.Agent agent = props.getAgent();
+        return new EngineSettings(props.workingDirectory(), agent.getMaxTurns(), agent.getMaxToolConcurrency(),
+                MAX_RETRIES, RETRY_BASE_DELAY, MAX_MALFORMED_RETRIES, props.getSubagentMaxDepth());
+    }
+
+    private static ConversationCompactor compactor(AgentCoreProperties.Context context) {
+        CompactionSettings defaults = CompactionSettings.defaults();
+        return new ConversationCompactor(new CompactionSettings(context.getThreshold(), context.getMaxTokens(),
+                defaults.summaryMaxTokens(), defaults.transcriptBudget()));
     }
 
     private static String systemPrompt(AgentCoreProperties props) {
@@ -224,8 +238,9 @@ public class AgentCoreAutoConfiguration {
         return props.getAgent().getSystemPrompt();
     }
 
-    static Path resolve(AgentCoreProperties props, String p) {
-        String expanded = p.startsWith("~/") ? System.getProperty("user.home") + p.substring(1) : p;
+    /** 配置里的路径：~/ 开头的展开到用户目录，相对路径相对于工作目录。 */
+    static Path resolve(AgentCoreProperties props, String configured) {
+        String expanded = configured.startsWith("~/") ? System.getProperty("user.home") + configured.substring(1) : configured;
         Path path = Path.of(expanded);
         return path.isAbsolute() ? path : props.workingDirectory().resolve(path);
     }

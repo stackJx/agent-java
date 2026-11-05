@@ -91,6 +91,18 @@ public sealed interface AgentEvent {
 
     /** 非致命提示：level = info / warning / error。 */
     record Notice(String level, String message) implements AgentEvent {
+        public static Notice info(String message) {
+            return new Notice("info", message);
+        }
+
+        public static Notice warning(String message) {
+            return new Notice("warning", message);
+        }
+
+        public static Notice error(String message) {
+            return new Notice("error", message);
+        }
+
         public String type() {
             return "notice";
         }

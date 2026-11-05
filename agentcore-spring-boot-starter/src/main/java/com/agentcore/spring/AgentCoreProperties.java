@@ -127,39 +127,39 @@ public class AgentCoreProperties {
 
         /** 转成 ModelGatewayFactory 使用的 snake_case 配置。 */
         Map<String, Object> toConfig() {
-            Map<String, Object> m = new LinkedHashMap<>();
-            put(m, "type", type);
-            put(m, "base_url", baseUrl);
-            put(m, "api_key", apiKey);
-            put(m, "api_key_env", apiKeyEnv);
-            put(m, "max_tokens", maxTokens);
-            put(m, "max_tokens_param", maxTokensParam);
-            put(m, "context_window", contextWindow);
-            put(m, "reasoning_effort", reasoningEffort);
-            put(m, "reasoning_summary", reasoningSummary);
-            put(m, "store", store);
-            put(m, "echo_reasoning", echoReasoning);
-            put(m, "stream_usage", streamUsage);
-            put(m, "timeout_seconds", timeoutSeconds);
+            Map<String, Object> config = new LinkedHashMap<>();
+            put(config, "type", type);
+            put(config, "base_url", baseUrl);
+            put(config, "api_key", apiKey);
+            put(config, "api_key_env", apiKeyEnv);
+            put(config, "max_tokens", maxTokens);
+            put(config, "max_tokens_param", maxTokensParam);
+            put(config, "context_window", contextWindow);
+            put(config, "reasoning_effort", reasoningEffort);
+            put(config, "reasoning_summary", reasoningSummary);
+            put(config, "store", store);
+            put(config, "echo_reasoning", echoReasoning);
+            put(config, "stream_usage", streamUsage);
+            put(config, "timeout_seconds", timeoutSeconds);
             if (!headers.isEmpty()) {
-                m.put("headers", headers);
+                config.put("headers", headers);
             }
             if (!extraBody.isEmpty()) {
-                m.put("extra_body", extraBody);
+                config.put("extra_body", extraBody);
             }
-            put(m, "thinking", thinking);
-            put(m, "thinking_display", thinkingDisplay);
-            put(m, "effort", effort);
-            put(m, "fallbacks", fallbacks);
-            put(m, "eager_input_streaming", eagerInputStreaming);
-            put(m, "prompt_cache", promptCache);
-            put(m, "max_retries", maxRetries);
-            return m;
+            put(config, "thinking", thinking);
+            put(config, "thinking_display", thinkingDisplay);
+            put(config, "effort", effort);
+            put(config, "fallbacks", fallbacks);
+            put(config, "eager_input_streaming", eagerInputStreaming);
+            put(config, "prompt_cache", promptCache);
+            put(config, "max_retries", maxRetries);
+            return config;
         }
 
-        private static void put(Map<String, Object> m, String k, Object v) {
-            if (v != null) {
-                m.put(k, v);
+        private static void put(Map<String, Object> config, String key, Object value) {
+            if (value != null) {
+                config.put(key, value);
             }
         }
 
@@ -276,26 +276,26 @@ public class AgentCoreProperties {
         private boolean enabled = true;
 
         Map<String, Object> toConfig() {
-            Map<String, Object> m = new LinkedHashMap<>();
+            Map<String, Object> config = new LinkedHashMap<>();
             if (command != null) {
-                m.put("command", command);
-                m.put("args", args);
-                m.put("env", env);
+                config.put("command", command);
+                config.put("args", args);
+                config.put("env", env);
             }
             if (cwd != null) {
-                m.put("cwd", cwd);
+                config.put("cwd", cwd);
             }
             if (url != null) {
-                m.put("url", url);
-                m.put("headers", headers);
+                config.put("url", url);
+                config.put("headers", headers);
             }
-            m.put("timeout", timeout);
-            m.put("startup_timeout", startupTimeout);
+            config.put("timeout", timeout);
+            config.put("startup_timeout", startupTimeout);
             if (tools != null) {
-                m.put("tools", tools);
+                config.put("tools", tools);
             }
-            m.put("enabled", enabled);
-            return m;
+            config.put("enabled", enabled);
+            return config;
         }
 
         public String getCommand() { return command; }
@@ -418,20 +418,20 @@ public class AgentCoreProperties {
     // ------------------------------------------------------------------ 便捷转换
 
     Map<String, Map<String, Object>> providerConfigs() {
-        Map<String, Map<String, Object>> out = new LinkedHashMap<>();
-        providers.forEach((k, v) -> out.put(k, v.toConfig()));
-        return out;
+        Map<String, Map<String, Object>> configs = new LinkedHashMap<>();
+        providers.forEach((name, value) -> configs.put(name, value.toConfig()));
+        return configs;
     }
 
     Map<String, Map<String, Object>> mcpConfigs() {
-        Map<String, Map<String, Object>> out = new LinkedHashMap<>();
-        mcpServers.forEach((k, v) -> out.put(k, v.toConfig()));
-        return out;
+        Map<String, Map<String, Object>> configs = new LinkedHashMap<>();
+        mcpServers.forEach((name, value) -> configs.put(name, value.toConfig()));
+        return configs;
     }
 
     Path workingDirectory() {
-        Path p = agent.getWorkingDirectory() != null ? agent.getWorkingDirectory() : Path.of(System.getProperty("user.dir"));
-        return p.toAbsolutePath().normalize();
+        Path directory = agent.getWorkingDirectory() != null ? agent.getWorkingDirectory() : Path.of(System.getProperty("user.dir"));
+        return directory.toAbsolutePath().normalize();
     }
 
     public String getModel() { return model; }

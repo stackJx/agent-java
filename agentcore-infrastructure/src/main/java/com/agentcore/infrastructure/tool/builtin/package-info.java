@@ -1,5 +1,6 @@
 /**
- * 内置工具：文件读写与搜索（{@link com.agentcore.infrastructure.tool.builtin.FileTools}）、
+ * 内置工具：文件读写（{@link com.agentcore.infrastructure.tool.builtin.FileTools}）、
+ * 按文件名和内容搜索（{@link com.agentcore.infrastructure.tool.builtin.SearchTools}）、
  * 命令执行（{@link com.agentcore.infrastructure.tool.builtin.ShellTools}）、抓网页（{@link com.agentcore.infrastructure.tool.builtin.WebTools}）、
  * 任务清单和向用户提问（{@link com.agentcore.infrastructure.tool.builtin.InteractionTools}）。
  * {@link com.agentcore.infrastructure.tool.builtin.BuiltinTools} 按名字挑选启用哪些。

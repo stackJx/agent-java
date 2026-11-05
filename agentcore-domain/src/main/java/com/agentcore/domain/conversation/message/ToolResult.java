@@ -15,8 +15,8 @@ public record ToolResult(String toolCallId, String toolName, List<ContentBlock> 
     public ToolResult {
         Objects.requireNonNull(toolCallId, "toolCallId");
         content = List.copyOf(content == null ? List.of() : content);
-        for (ContentBlock b : content) {
-            if (!(b instanceof TextBlock) && !(b instanceof ImageBlock)) {
+        for (ContentBlock block : content) {
+            if (!(block instanceof TextBlock) && !(block instanceof ImageBlock)) {
                 throw new IllegalArgumentException("tool result may only contain text or images");
             }
         }

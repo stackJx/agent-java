@@ -279,6 +279,8 @@ Tool lookup = FunctionTool.builder("lookup")
 
 ### 内置工具
 
+代码在 `infrastructure/tool/builtin/`：`FileTools`（读写文件）、`SearchTools`（glob / grep）、`ShellTools`（bash）、`WebTools`（web_fetch）、`InteractionTools`（todo_write / ask_user）。
+
 | 工具 | 只读 | 作用 |
 |---|---|---|
 | `read_file` | ✓ | 读文件（带行号，支持分段） |

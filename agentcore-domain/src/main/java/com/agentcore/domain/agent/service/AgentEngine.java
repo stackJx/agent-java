@@ -1,6 +1,7 @@
 package com.agentcore.domain.agent.service;
 
 import com.agentcore.domain.agent.event.AgentEvent;
+import com.agentcore.domain.agent.event.AgentEvent.Notice;
 import com.agentcore.domain.agent.event.AgentEventListener;
 import com.agentcore.domain.agent.hook.AgentHook;
 import com.agentcore.domain.agent.interceptor.ArgumentsInterceptor;
@@ -49,20 +50,30 @@ import java.util.concurrent.ConcurrentHashMap;
  *    └─ 否：结束（或处理 max_tokens / refusal / pause_turn / 超窗）
  * </pre>
  *
- * 分工：
+ * 读代码的顺序：{@code Run#execute}（总流程）→ {@code Run#loop}（一轮一轮跑）→ {@code Run#decideNext}（这一轮之后干什么）。
+ * 方法上的 ①～⑩ 与 docs/02-agent-loop.md 的流程图对应。
+ *
+ * <p>分工：
  * <ul>
- *   <li>本类：主循环 ①～⑩（{@code Run#execute}）和上下文压缩（{@code Run#compact}）；</li>
- *   <li>{@link ToolExecutor}：工具分批并行执行；单个调用的关卡 1～9 分散在它和 {@code agent.interceptor} 的拦截器里；</li>
+ *   <li>本类：主循环和上下文压缩；</li>
+ *   <li>{@link ToolExecutor}：执行工具（只读的并行，每个调用过一遍拦截器链，关卡 1～9 见 docs/04）；</li>
  *   <li>{@link RetryingModelGateway}：调模型时的退避重试（装饰器，包在模型外面）。</li>
  * </ul>
  * 只依赖领域端口（ModelGateway、Approver、ConversationRepository、Tool），与具体厂商和框架无关。
- * 引擎本身无状态（每个会话的工具状态按会话隔离），可被多个会话并发使用。
- * 注释里的 ①～⑩ 与 docs/02-agent-loop.md 的流程图对应，1～9 与 docs/04-tools-and-permissions.md 的关卡图对应。
+ * 引擎本身无状态（每次运行的状态在 {@code Run} 里，工具状态按会话隔离），可被多个会话并发使用。
  */
 public final class AgentEngine {
 
     private static final System.Logger LOG = System.getLogger(AgentEngine.class.getName());
 
+    /** 请求一发出去就超窗时，压缩后重发的次数上限（整次运行累计）。 */
+    private static final int MAX_OVERFLOW_COMPACTIONS = 2;
+
+    private static final String CUT_OFF_TOOL_CALL =
+            "Error: your response was cut off before this tool call was complete, so it was not executed. "
+                    + "Retry with smaller steps (for example, write a large file in several edits).";
+
+    // ---- 构建时传入的配置
     private final AgentDefinition definition;
     private final ModelGateway model;
     private final ModelGateway summarizer;
@@ -75,35 +86,43 @@ public final class AgentEngine {
     private final ConversationCompactor compactor;
     private final Map<Class<?>, Object> services;
     private final int depth;
-    /** 会话级工具状态（文件读取记录、todo 列表等），按会话 ID 隔离；同一会话的多次运行共用。 */
-    private final Map<String, Map<String, Object>> toolState = new ConcurrentHashMap<>();
+
+    // ---- 由配置派生
     /** 带退避重试的模型（装饰器）。model() 仍然返回原始模型。 */
     private final ModelGateway retryingModel;
     private final ToolExecutor toolExecutor;
+    /** 会话级工具状态（文件读取记录、todo 列表等），按会话 ID 隔离；同一会话的多次运行共用。 */
+    private final Map<String, Map<String, Object>> toolState = new ConcurrentHashMap<>();
 
-    private AgentEngine(Builder b) {
-        this.definition = b.definition;
-        this.model = b.model;
-        this.summarizer = b.summarizer != null ? b.summarizer : b.model;
-        this.tools = b.tools;
-        this.permissions = b.permissions;
-        this.approver = b.approver;
-        this.hooks = List.copyOf(b.hooks);
-        this.interceptors = List.copyOf(b.interceptors);
-        this.repository = b.repository;
-        this.compactor = b.compactor;
-        this.services = Map.copyOf(b.services);
-        this.depth = b.depth;
-        EngineSettings s = definition.settings();
-        this.retryingModel = new RetryingModelGateway(model, s.maxRetries(), s.retryBaseDelay(), s.maxMalformedRetries());
-        // 工具调用的拦截器链：参数校验 → 权限与审批 → 使用者的拦截器 → 钩子 → 截断输出 →（末端）执行
+    private AgentEngine(Builder builder) {
+        this.definition = builder.definition;
+        this.model = builder.model;
+        this.summarizer = builder.summarizer != null ? builder.summarizer : builder.model;
+        this.tools = builder.tools;
+        this.permissions = builder.permissions;
+        this.approver = builder.approver;
+        this.hooks = List.copyOf(builder.hooks);
+        this.interceptors = List.copyOf(builder.interceptors);
+        this.repository = builder.repository;
+        this.compactor = builder.compactor;
+        this.services = Map.copyOf(builder.services);
+        this.depth = builder.depth;
+
+        EngineSettings settings = definition.settings();
+        this.retryingModel = new RetryingModelGateway(model, settings.maxRetries(), settings.retryBaseDelay(),
+                settings.maxMalformedRetries());
+        this.toolExecutor = new ToolExecutor(tools, interceptorChain(), settings, services, depth);
+    }
+
+    /** 工具调用的拦截器链：参数校验 → 权限与审批 → 使用者的拦截器 → 钩子 → 截断输出 →（末端）执行。 */
+    private List<ToolInterceptor> interceptorChain() {
         List<ToolInterceptor> chain = new ArrayList<>();
         chain.add(new ArgumentsInterceptor());
         chain.add(new PermissionInterceptor(permissions, approver));
         chain.addAll(interceptors);
         chain.add(new HookInterceptor(hooks));
         chain.add(new TruncateInterceptor());
-        this.toolExecutor = new ToolExecutor(tools, chain, s, services, depth);
+        return chain;
     }
 
     public static Builder builder() {
@@ -111,20 +130,20 @@ public final class AgentEngine {
     }
 
     public Builder toBuilder() {
-        Builder b = new Builder();
-        b.definition = definition;
-        b.model = model;
-        b.summarizer = summarizer == model ? null : summarizer;
-        b.tools = tools;
-        b.permissions = permissions;
-        b.approver = approver;
-        b.hooks = new ArrayList<>(hooks);
-        b.interceptors = new ArrayList<>(interceptors);
-        b.repository = repository;
-        b.compactor = compactor;
-        b.services = new LinkedHashMap<>(services);
-        b.depth = depth;
-        return b;
+        Builder builder = new Builder();
+        builder.definition = definition;
+        builder.model = model;
+        builder.summarizer = summarizer == model ? null : summarizer;
+        builder.tools = tools;
+        builder.permissions = permissions;
+        builder.approver = approver;
+        builder.hooks = new ArrayList<>(hooks);
+        builder.interceptors = new ArrayList<>(interceptors);
+        builder.repository = repository;
+        builder.compactor = compactor;
+        builder.services = new LinkedHashMap<>(services);
+        builder.depth = depth;
+        return builder;
     }
 
     public AgentDefinition definition() {
@@ -164,17 +183,6 @@ public final class AgentEngine {
         return depth;
     }
 
-    /** 当前上下文规模估算：有上一次请求的真实用量时以它为基线，只估算之后新增的消息。 */
-    public long estimateContextTokens(Conversation conversation) {
-        List<Message> msgs = conversation.messages();
-        Conversation.ContextSnapshot snap = conversation.contextSnapshot();
-        if (snap != null && snap.messageCount() <= msgs.size()) {
-            return snap.tokens() + TokenEstimator.estimate(msgs.subList(snap.messageCount(), msgs.size()));
-        }
-        long fixed = TokenEstimator.estimate(definition.systemPrompt()) + TokenEstimator.estimate(String.valueOf(tools.specs()));
-        return fixed + TokenEstimator.estimate(msgs);
-    }
-
     /**
      * 执行一次运行。input 为 null/空表示在现有历史上继续（例如恢复中断的会话）。
      * 该方法阻塞直到运行结束；所有过程通过 listener 以事件形式发出。
@@ -187,36 +195,62 @@ public final class AgentEngine {
 
     /** 手动压缩一个会话的上下文。 */
     public Optional<AgentEvent.Compacted> compact(Conversation conversation, AgentEventListener listener) {
-        List<AgentEvent.Compacted> out = new ArrayList<>();
-        Run run = new Run(conversation, e -> {
-            if (e instanceof AgentEvent.Compacted c) {
-                out.add(c);
+        List<AgentEvent.Compacted> compacted = new ArrayList<>();
+        Run run = new Run(conversation, event -> {
+            if (event instanceof AgentEvent.Compacted c) {
+                compacted.add(c);
             }
             if (listener != null) {
-                listener.onEvent(e);
+                listener.onEvent(event);
             }
         }, new RunControl());
         run.compact();
-        return out.stream().findFirst();
+        return compacted.stream().findFirst();
     }
 
-    private Map<String, Object> stateFor(Conversation c) {
-        return toolState.computeIfAbsent(c.id().value(), k -> new ConcurrentHashMap<>());
+    /** 当前上下文规模估算：有上一次请求的真实用量时以它为基线，只估算之后新增的消息。 */
+    public long estimateContextTokens(Conversation conversation) {
+        List<Message> messages = conversation.messages();
+        Conversation.ContextSnapshot snapshot = conversation.contextSnapshot();
+        if (snapshot != null && snapshot.messageCount() <= messages.size()) {
+            List<Message> newer = messages.subList(snapshot.messageCount(), messages.size());
+            return snapshot.tokens() + TokenEstimator.estimate(newer);
+        }
+        long fixed = TokenEstimator.estimate(definition.systemPrompt()) + TokenEstimator.estimate(String.valueOf(tools.specs()));
+        return fixed + TokenEstimator.estimate(messages);
     }
 
     // ======================================================================== 单次运行
 
+    /** 运行怎么结束的：停止原因、最终文本、错误信息（只有 ERROR 时有）。 */
+    private record Ending(StopReason reason, String text, String error) {
+        static Ending of(StopReason reason, String text) {
+            return new Ending(reason, text, null);
+        }
+    }
+
+    /** {@code Run#decideNext} 的返回值之一：不结束，进入下一轮。 */
+    private static final Optional<Ending> NEXT_TURN = Optional.empty();
+
     /**
-     * 一次运行的全部状态（会话、监听器、取消/插话控制、累计用量）。
+     * 一次运行的全部状态（会话、监听器、取消/插话控制、轮数、累计用量）。
      * 每次 {@link #run} 新建一个，用完即弃 —— 所以引擎本身可以被多个会话同时使用。
      */
     private final class Run implements ToolExecutor.Scope {
         private final Conversation conversation;
         private final AgentEventListener listener;
         private final RunControl control;
+        private final EngineSettings settings = definition.settings();
         private final Object emitLock = new Object();
+
+        private int turn;
         private volatile TokenUsage usage = TokenUsage.ZERO;
-        private boolean forceCompact;
+        /** 已经因为"请求超窗"压缩重发过几次。 */
+        private int overflowCompactions;
+        /** 上一轮生成时撑满了上下文窗口：下一轮开始前必须压缩。 */
+        private boolean mustCompact;
+        /** 最近一次"模型说完了"的回复。运行后来被取消、出错或到达轮数上限时，作为最终文本返回。 */
+        private String lastAnswer = "";
 
         Run(Conversation conversation, AgentEventListener listener, RunControl control) {
             this.conversation = conversation;
@@ -224,180 +258,168 @@ public final class AgentEngine {
             this.control = control;
         }
 
-        /** 发事件。工具并行执行时会从多个线程调用，加锁保证监听器看到的事件不交错；监听器出错不影响运行。 */
-        @Override
-        public void emit(AgentEvent e) {
-            synchronized (emitLock) {
-                try {
-                    listener.onEvent(e);
-                } catch (RuntimeException ex) {
-                    LOG.log(System.Logger.Level.WARNING, "event listener failed", ex);
-                }
-            }
-        }
-
-        @Override
-        public synchronized void addUsage(TokenUsage u) {
-            usage = usage.plus(u);
-        }
-
-        @Override
-        public Conversation conversation() {
-            return conversation;
-        }
-
-        @Override
-        public CancellationToken cancel() {
-            return control.token();
-        }
-
-        @Override
-        public Map<String, Object> toolState() {
-            return stateFor(conversation);
-        }
-
-        /** 把聚合上新产生的领域事件写入仓储。每一步状态变化后都调用，进程随时崩溃也能从磁盘恢复。 */
-        @Override
-        public void save() {
-            if (repository != null) {
-                repository.save(conversation);
-            }
-        }
-
+        /** 总流程：准备 → 一轮一轮跑到结束 → 发 RunFinished。取消和出错都不往外抛，同样正常收尾。 */
         RunResult execute(List<? extends ContentBlock> input) {
-            int turn = 0;
-            int overflowRetries = 0;
-            String finalText = "";
-            StopReason stop = StopReason.END_TURN;
-            String error = null;
-            EngineSettings s = definition.settings();
+            Ending ending;
             try {
-                // ① 修复残局：上次运行（崩溃 / 取消）可能留下没有结果的工具调用，补上错误结果，历史才合法
-                if (conversation.repairDanglingToolCalls("Interrupted: the previous run ended before this tool finished.")) {
-                    save();
-                }
-                // ② 追加用户输入。input 为空表示在现有历史上继续（例如恢复会话后直接继续跑）
-                if (input != null && !input.isEmpty()) {
-                    conversation.addUserInput(input);
-                    save();
-                }
-                emit(new AgentEvent.RunStarted(conversation.id().value(), definition.name(), model.describe()));
-                while (true) {
-                    // ③ 每轮开始：检查取消和轮数上限
-                    control.token().throwIfCancelled();
-                    if (turn >= s.maxTurns()) {
-                        stop = StopReason.MAX_TURNS;
-                        emit(new AgentEvent.Notice("warning", "reached max_turns=" + s.maxTurns()));
-                        break;
-                    }
-                    turn++;
-                    emit(new AgentEvent.TurnStarted(turn));
-
-                    // ④ 上下文快满了（或上一轮生成时撑满了窗口）：先压缩
-                    if (forceCompact || compactor.shouldCompact(estimateContextTokens(conversation), model.contextWindow())) {
-                        forceCompact = false;
-                        compact();
-                    }
-
-                    // ⑤ 组装请求：固定的系统提示词 + 全部历史 + 工具列表；钩子可以改写
-                    ModelRequest request = ModelRequest.of(definition.systemPrompt(), conversation.messages(), tools.specs());
-                    for (AgentHook h : hooks) {
-                        request = h.beforeModel(request);
-                    }
-                    // ⑥ 调模型（流式，增量实时转成事件）。可重试的错误由 RetryingModelGateway 退避重试；
-                    //    请求本身超窗时压缩后重做本轮（turn-- 让这一轮不计数），最多 2 次
-                    ModelResponse response;
-                    try {
-                        response = retryingModel.stream(request, new StreamEventForwarder(this::emit), control.token());
-                    } catch (ContextOverflowException e) {
-                        if (overflowRetries++ >= 2) {
-                            throw e;
-                        }
-                        emit(new AgentEvent.Notice("warning", "context overflow, compacting and retrying: " + e.getMessage()));
-                        compact();
-                        turn--;
-                        continue;
-                    }
-                    for (AgentHook h : hooks) {
-                        h.afterModel(response);
-                    }
-
-                    // ⑦ 先保存助手回复，再决定下一步。即使后面执行工具时崩溃，这条回复也已经落盘
-                    Message msg = response.message();
-                    conversation.addAssistantReply(msg, response.usage());
-                    save();
-                    addUsage(response.usage());
-                    emit(new AgentEvent.AssistantMessageCompleted(msg, response.usage(), response.stopReason()));
-
-                    // ⑧ 按停止原因分支
-                    StopReason sr = response.stopReason();
-                    List<ToolCall> calls = msg.toolCalls();
-                    boolean truncated = sr == StopReason.MAX_TOKENS || sr == StopReason.CONTEXT_OVERFLOW;
-                    if (sr == StopReason.PAUSE_TURN && calls.isEmpty()) {
-                        continue; // 服务端工具暂停：原样续发
-                    }
-                    if (sr == StopReason.REFUSAL) {
-                        stop = StopReason.REFUSAL;
-                        finalText = msg.text();
-                        emit(new AgentEvent.Notice("warning", "model refused the request"
-                                + (response.stopDetails() != null ? " (" + response.stopDetails() + ")" : "")));
-                        if (!calls.isEmpty()) {
-                            conversation.repairDanglingToolCalls("Not executed: the response was refused.");
-                            save();
-                        }
-                        break;
-                    }
-                    if (truncated && !calls.isEmpty()) {
-                        // 工具参数可能被截断：绝不执行，回填错误让模型分步重试
-                        List<ToolResult> errs = calls.stream().map(c -> ToolResult.text(c.id(), c.name(),
-                                "Error: your response was cut off before this tool call was complete, so it was not executed. "
-                                        + "Retry with smaller steps (for example, write a large file in several edits).", true)).toList();
-                        conversation.answerToolCalls(errs, List.of());
-                        save();
-                        forceCompact = sr == StopReason.CONTEXT_OVERFLOW;
-                        continue;
-                    }
-                    if (!calls.isEmpty()) {
-                        // ⑨ 执行工具（ToolExecutor：分批并行 + 拦截器链），结果和运行中用户的插话放进同一条用户消息，然后进入下一轮
-                        List<ToolResult> results = toolExecutor.execute(calls, this);
-                        List<ContentBlock> extra = control.drainSteering().stream().<ContentBlock>map(TextBlock::new).toList();
-                        conversation.answerToolCalls(results, extra);
-                        save();
-                        continue;
-                    }
-                    if (truncated) {
-                        stop = StopReason.MAX_TOKENS;
-                        finalText = msg.text();
-                        emit(new AgentEvent.Notice("warning", "the response hit the output token limit and may be incomplete"));
-                        break;
-                    }
-                    // ⑩ 模型说完了。如果用户在运行中插过话，把它当作新的输入继续跑；否则正常结束
-                    finalText = msg.text();
-                    List<String> pending = control.drainSteering();
-                    if (!pending.isEmpty()) {
-                        conversation.addUserInput(pending.stream().<ContentBlock>map(TextBlock::new).toList());
-                        save();
-                        continue;
-                    }
-                    stop = StopReason.END_TURN;
-                    break;
-                }
+                start(input);
+                ending = loop();
             } catch (CancelledException e) {
-                // 取消和出错都不往外抛：补齐工具结果保证历史合法，然后以 RunFinished 正常收尾
-                stop = StopReason.CANCELLED;
                 repairQuietly("Cancelled: the run was interrupted before this tool finished.");
-                emit(new AgentEvent.Notice("info", "run cancelled"));
+                emit(Notice.info("run cancelled"));
+                ending = Ending.of(StopReason.CANCELLED, lastAnswer);
             } catch (RuntimeException e) {
                 LOG.log(System.Logger.Level.ERROR, "agent run failed", e);
-                stop = StopReason.ERROR;
-                error = e.getClass().getSimpleName() + ": " + e.getMessage();
+                String error = e.getClass().getSimpleName() + ": " + e.getMessage();
                 repairQuietly("Error: the run failed before this tool finished.");
-                emit(new AgentEvent.Notice("error", error));
+                emit(Notice.error(error));
+                ending = new Ending(StopReason.ERROR, lastAnswer, error);
             }
-            emit(new AgentEvent.RunFinished(stop, finalText, turn, usage, error));
-            return new RunResult(conversation.id().value(), finalText, stop, turn, usage, error);
+            emit(new AgentEvent.RunFinished(ending.reason(), ending.text(), turn, usage, ending.error()));
+            return new RunResult(conversation.id().value(), ending.text(), ending.reason(), turn, usage, ending.error());
         }
 
+        /** ①② 准备：清理上次运行的残局，追加用户输入。 */
+        private void start(List<? extends ContentBlock> input) {
+            // ① 上次运行（崩溃 / 取消）可能留下没有结果的工具调用，补上错误结果，历史才合法
+            if (conversation.repairDanglingToolCalls("Interrupted: the previous run ended before this tool finished.")) {
+                save();
+            }
+            // ② input 为空表示在现有历史上继续（例如恢复会话后直接继续跑）
+            if (input != null && !input.isEmpty()) {
+                conversation.addUserInput(input);
+                save();
+            }
+            emit(new AgentEvent.RunStarted(conversation.id().value(), definition.name(), model.describe()));
+        }
+
+        /** ③～⑩ 主循环。一轮 = 调一次模型；每轮结束由 decideNext 决定是结束运行还是再来一轮。 */
+        private Ending loop() {
+            while (true) {
+                // ③ 检查取消和轮数上限
+                control.token().throwIfCancelled();
+                if (turn >= settings.maxTurns()) {
+                    emit(Notice.warning("reached max_turns=" + settings.maxTurns()));
+                    return Ending.of(StopReason.MAX_TURNS, lastAnswer);
+                }
+                turn++;
+                emit(new AgentEvent.TurnStarted(turn));
+
+                // ④ 上下文快满了（或上一轮生成时撑满了窗口）：先压缩
+                if (mustCompact || compactor.shouldCompact(estimateContextTokens(conversation), model.contextWindow())) {
+                    mustCompact = false;
+                    compact();
+                }
+
+                ModelResponse response = callModel();          // ⑤⑥
+                saveReply(response);                            // ⑦
+                Optional<Ending> ending = decideNext(response);  // ⑧⑨⑩
+                if (ending.isPresent()) {
+                    return ending.get();
+                }
+            }
+        }
+
+        /**
+         * ⑤⑥ 组装请求并调模型（流式，增量实时转成事件）。
+         * 可重试的错误由 RetryingModelGateway 退避重试；请求本身超窗时先压缩再重发本轮。
+         */
+        private ModelResponse callModel() {
+            while (true) {
+                // ⑤ 固定的系统提示词 + 全部历史 + 工具列表；钩子可以改写
+                ModelRequest request = ModelRequest.of(definition.systemPrompt(), conversation.messages(), tools.specs());
+                for (AgentHook hook : hooks) {
+                    request = hook.beforeModel(request);
+                }
+                // ⑥
+                try {
+                    return retryingModel.stream(request, new StreamEventForwarder(this::emit), control.token());
+                } catch (ContextOverflowException e) {
+                    if (overflowCompactions++ >= MAX_OVERFLOW_COMPACTIONS) {
+                        throw e;
+                    }
+                    emit(Notice.warning("context overflow, compacting and retrying: " + e.getMessage()));
+                    compact();
+                }
+            }
+        }
+
+        /** ⑦ 先保存助手回复，再决定下一步：即使后面执行工具时崩溃，这条回复也已经落盘。 */
+        private void saveReply(ModelResponse response) {
+            for (AgentHook hook : hooks) {
+                hook.afterModel(response);
+            }
+            conversation.addAssistantReply(response.message(), response.usage());
+            save();
+            addUsage(response.usage());
+            emit(new AgentEvent.AssistantMessageCompleted(response.message(), response.usage(), response.stopReason()));
+        }
+
+        /** ⑧ 看这一轮的停止原因，决定下一步：返回 Ending 表示运行结束，返回 NEXT_TURN 表示再来一轮。 */
+        private Optional<Ending> decideNext(ModelResponse response) {
+            Message reply = response.message();
+            List<ToolCall> calls = reply.toolCalls();
+            StopReason reason = response.stopReason();
+            boolean cutOff = reason == StopReason.MAX_TOKENS || reason == StopReason.CONTEXT_OVERFLOW;
+
+            if (reason == StopReason.PAUSE_TURN && calls.isEmpty()) {
+                return NEXT_TURN; // 服务端工具暂停了：原样续发
+            }
+            if (reason == StopReason.REFUSAL) {
+                emit(Notice.warning("model refused the request"
+                        + (response.stopDetails() != null ? " (" + response.stopDetails() + ")" : "")));
+                if (!calls.isEmpty()) {
+                    conversation.repairDanglingToolCalls("Not executed: the response was refused.");
+                    save();
+                }
+                return Optional.of(Ending.of(StopReason.REFUSAL, reply.text()));
+            }
+            if (cutOff && !calls.isEmpty()) {
+                rejectCutOffCalls(calls);
+                mustCompact = reason == StopReason.CONTEXT_OVERFLOW;
+                return NEXT_TURN;
+            }
+            if (!calls.isEmpty()) {
+                runTools(calls);
+                return NEXT_TURN;
+            }
+            if (cutOff) {
+                emit(Notice.warning("the response hit the output token limit and may be incomplete"));
+                return Optional.of(Ending.of(StopReason.MAX_TOKENS, reply.text()));
+            }
+            // ⑩ 模型说完了。用户在运行中插过话：当作新的用户输入，再来一轮；否则正常结束
+            lastAnswer = reply.text();
+            List<ContentBlock> steering = takeSteering();
+            if (!steering.isEmpty()) {
+                conversation.addUserInput(steering);
+                save();
+                return NEXT_TURN;
+            }
+            return Optional.of(Ending.of(StopReason.END_TURN, reply.text()));
+        }
+
+        /** ⑨ 执行工具（ToolExecutor：分批并行 + 拦截器链）。结果和运行中用户的插话放进同一条用户消息。 */
+        private void runTools(List<ToolCall> calls) {
+            List<ToolResult> results = toolExecutor.execute(calls, this);
+            conversation.answerToolCalls(results, takeSteering());
+            save();
+        }
+
+        /** 回复被截断时，工具参数可能不完整：绝不执行，回填错误让模型分步重试。 */
+        private void rejectCutOffCalls(List<ToolCall> calls) {
+            List<ToolResult> errors = calls.stream()
+                    .map(call -> ToolResult.text(call.id(), call.name(), CUT_OFF_TOOL_CALL, true))
+                    .toList();
+            conversation.answerToolCalls(errors, List.of());
+            save();
+        }
+
+        /** 取走运行中用户的插话，转成文本块。 */
+        private List<ContentBlock> takeSteering() {
+            return control.drainSteering().stream().<ContentBlock>map(TextBlock::new).toList();
+        }
+
+        /** 运行异常结束时补齐工具结果；补的过程本身出错也只记日志，不掩盖原来的异常。 */
         private void repairQuietly(String reason) {
             try {
                 if (conversation.repairDanglingToolCalls(reason)) {
@@ -407,8 +429,6 @@ public final class AgentEngine {
                 LOG.log(System.Logger.Level.WARNING, "failed to repair history", ex);
             }
         }
-
-        // ------------------------------------------------------------ 压缩
 
         /**
          * 压缩上下文：旧对话 → 摘要 → 用"摘要 + 最新用户输入"替换历史。
@@ -432,7 +452,49 @@ public final class AgentEngine {
                 throw e;
             } catch (RuntimeException e) {
                 LOG.log(System.Logger.Level.WARNING, "compaction failed", e);
-                emit(new AgentEvent.Notice("warning", "context compaction failed: " + e.getMessage()));
+                emit(Notice.warning("context compaction failed: " + e.getMessage()));
+            }
+        }
+
+        // ---- ToolExecutor.Scope：工具执行器通过这几个方法访问本次运行
+
+        /** 发事件。工具并行执行时会从多个线程调用，加锁保证监听器看到的事件不交错；监听器出错不影响运行。 */
+        @Override
+        public void emit(AgentEvent event) {
+            synchronized (emitLock) {
+                try {
+                    listener.onEvent(event);
+                } catch (RuntimeException ex) {
+                    LOG.log(System.Logger.Level.WARNING, "event listener failed", ex);
+                }
+            }
+        }
+
+        @Override
+        public synchronized void addUsage(TokenUsage more) {
+            usage = usage.plus(more);
+        }
+
+        @Override
+        public Conversation conversation() {
+            return conversation;
+        }
+
+        @Override
+        public CancellationToken cancelToken() {
+            return control.token();
+        }
+
+        @Override
+        public Map<String, Object> toolState() {
+            return toolState.computeIfAbsent(conversation.id().value(), id -> new ConcurrentHashMap<>());
+        }
+
+        /** 把聚合上新产生的领域事件写入仓储。每一步状态变化后都调用，进程随时崩溃也能从磁盘恢复。 */
+        @Override
+        public void save() {
+            if (repository != null) {
+                repository.save(conversation);
             }
         }
     }

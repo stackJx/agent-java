@@ -13,10 +13,12 @@ import java.lang.reflect.Parameter;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
+import java.math.BigInteger;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +26,8 @@ import java.util.Optional;
 
 /** 扫描对象上带 {@link AgentTool} 的方法，生成 {@link Tool}：Schema 由 Java 类型推断，参数用 Jackson 转换。 */
 public final class AnnotatedTools {
+
+    private static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(10);
 
     private AnnotatedTools() {
     }
@@ -37,22 +41,22 @@ public final class AnnotatedTools {
      * 代理类重写的方法上没有注解，需要传入原始类型。
      */
     public static List<Tool> from(Object bean, Class<?> type) {
-        List<Tool> out = new ArrayList<>();
+        List<Tool> tools = new ArrayList<>();
         Method[] methods = type.getMethods();
-        Arrays.sort(methods, (a, b) -> a.getName().compareTo(b.getName())); // 稳定顺序
-        for (Method m : methods) {
-            AgentTool at = m.getAnnotation(AgentTool.class);
-            if (at != null) {
-                out.add(new MethodTool(bean, m, at));
+        Arrays.sort(methods, Comparator.comparing(Method::getName)); // 稳定顺序
+        for (Method method : methods) {
+            AgentTool annotation = method.getAnnotation(AgentTool.class);
+            if (annotation != null) {
+                tools.add(new MethodTool(bean, method, annotation));
             }
         }
-        return out;
+        return tools;
     }
 
     /** 类型上是否有 {@link AgentTool} 方法。 */
     public static boolean hasTools(Class<?> type) {
-        for (Method m : type.getMethods()) {
-            if (m.isAnnotationPresent(AgentTool.class)) {
+        for (Method method : type.getMethods()) {
+            if (method.isAnnotationPresent(AgentTool.class)) {
                 return true;
             }
         }
@@ -63,63 +67,82 @@ public final class AnnotatedTools {
         return camel.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toLowerCase();
     }
 
-    /** Java 类型 → JSON Schema。 */
+    /** Java 类型 → JSON Schema。Optional&lt;T&gt; 按 T 处理；record 展开成带 properties 的对象；认不出的类型当作对象。 */
     static Map<String, Object> schemaOf(Type type) {
-        Class<?> raw = type instanceof Class<?> c ? c : type instanceof ParameterizedType p ? (Class<?>) p.getRawType() : Object.class;
-        Map<String, Object> s = new LinkedHashMap<>();
-        if (raw == String.class || raw == Character.class || raw == char.class) {
-            s.put("type", "string");
-        } else if (raw == boolean.class || raw == Boolean.class) {
-            s.put("type", "boolean");
-        } else if (raw == int.class || raw == long.class || raw == short.class || raw == Integer.class || raw == Long.class
-                || raw == Short.class || raw == java.math.BigInteger.class) {
-            s.put("type", "integer");
-        } else if (raw == double.class || raw == float.class || Number.class.isAssignableFrom(raw)) {
-            s.put("type", "number");
-        } else if (raw.isEnum()) {
-            s.put("type", "string");
-            s.put("enum", Arrays.stream(raw.getEnumConstants()).map(e -> ((Enum<?>) e).name()).toList());
-        } else if (raw.isArray()) {
-            s.put("type", "array");
-            s.put("items", schemaOf(raw.getComponentType()));
-        } else if (Collection.class.isAssignableFrom(raw)) {
-            s.put("type", "array");
-            if (type instanceof ParameterizedType p) {
-                s.put("items", schemaOf(p.getActualTypeArguments()[0]));
-            }
-        } else if (Map.class.isAssignableFrom(raw)) {
-            s.put("type", "object");
-        } else if (raw == Optional.class && type instanceof ParameterizedType p) {
-            return schemaOf(p.getActualTypeArguments()[0]);
-        } else if (raw.isRecord()) {
-            Map<String, Object> props = new LinkedHashMap<>();
-            List<String> required = new ArrayList<>();
-            for (RecordComponent rc : raw.getRecordComponents()) {
-                Map<String, Object> ps = schemaOf(rc.getGenericType());
-                Param p = rc.getAnnotation(Param.class);
-                if (p != null && !p.value().isEmpty()) {
-                    ps.put("description", p.value());
-                }
-                props.put(rc.getName(), ps);
-                if (p == null || p.required()) {
-                    required.add(rc.getName());
-                }
-            }
-            s.put("type", "object");
-            s.put("properties", props);
-            s.put("required", required);
-        } else {
-            s.put("type", "object");
+        Class<?> raw = rawClass(type);
+        if (raw == Optional.class && type instanceof ParameterizedType) {
+            return schemaOf(typeArgument(type));
         }
-        return s;
+        Map<String, Object> schema = new LinkedHashMap<>();
+        if (raw == String.class || raw == Character.class || raw == char.class) {
+            schema.put("type", "string");
+        } else if (raw == boolean.class || raw == Boolean.class) {
+            schema.put("type", "boolean");
+        } else if (raw == int.class || raw == long.class || raw == short.class || raw == Integer.class || raw == Long.class
+                || raw == Short.class || raw == BigInteger.class) {
+            schema.put("type", "integer");
+        } else if (raw == double.class || raw == float.class || Number.class.isAssignableFrom(raw)) {
+            schema.put("type", "number");
+        } else if (raw.isEnum()) {
+            schema.put("type", "string");
+            schema.put("enum", Arrays.stream(raw.getEnumConstants()).map(constant -> ((Enum<?>) constant).name()).toList());
+        } else if (raw.isArray()) {
+            schema.put("type", "array");
+            schema.put("items", schemaOf(raw.getComponentType()));
+        } else if (Collection.class.isAssignableFrom(raw)) {
+            schema.put("type", "array");
+            if (type instanceof ParameterizedType) {
+                schema.put("items", schemaOf(typeArgument(type)));
+            }
+        } else if (raw.isRecord()) {
+            return recordSchema(raw);
+        } else {
+            schema.put("type", "object"); // Map 和其他类型
+        }
+        return schema;
     }
 
+    /** record 的每个组件是一个属性；没有 @Param 或 @Param(required = true) 的是必填。 */
+    private static Map<String, Object> recordSchema(Class<?> record) {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        List<String> required = new ArrayList<>();
+        for (RecordComponent component : record.getRecordComponents()) {
+            Map<String, Object> property = schemaOf(component.getGenericType());
+            Param param = component.getAnnotation(Param.class);
+            if (param != null && !param.value().isEmpty()) {
+                property.put("description", param.value());
+            }
+            properties.put(component.getName(), property);
+            if (param == null || param.required()) {
+                required.add(component.getName());
+            }
+        }
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", properties);
+        schema.put("required", required);
+        return schema;
+    }
+
+    private static Class<?> rawClass(Type type) {
+        if (type instanceof Class<?> plain) {
+            return plain;
+        }
+        return type instanceof ParameterizedType generic ? (Class<?>) generic.getRawType() : Object.class;
+    }
+
+    private static Type typeArgument(Type type) {
+        return ((ParameterizedType) type).getActualTypeArguments()[0];
+    }
+
+    /** 一个带 {@link AgentTool} 的方法包装成的工具。参数按名字从模型给的 JSON 里取，用 Jackson 转成方法的参数类型。 */
     static final class MethodTool implements Tool {
         private final Object bean;
         private final Method method;
         private final AgentTool meta;
         private final String name;
         private final Map<String, Object> schema;
+        /** 与方法参数一一对应；ToolContext 参数的位置是 null（调用时直接传上下文）。 */
         private final List<String> paramNames = new ArrayList<>();
         private final List<JavaType> paramTypes = new ArrayList<>();
 
@@ -128,35 +151,36 @@ public final class AnnotatedTools {
             this.method = method;
             this.meta = meta;
             this.name = meta.name().isEmpty() ? snake(method.getName()) : meta.name();
-            Map<String, Object> props = new LinkedHashMap<>();
+            Map<String, Object> properties = new LinkedHashMap<>();
             List<String> required = new ArrayList<>();
-            for (Parameter p : method.getParameters()) {
-                if (p.getType() == ToolContext.class) {
+            for (Parameter parameter : method.getParameters()) {
+                if (parameter.getType() == ToolContext.class) {
                     paramNames.add(null);
                     paramTypes.add(null);
                     continue;
                 }
-                Param pa = p.getAnnotation(Param.class);
-                String pn = pa != null && !pa.name().isEmpty() ? pa.name() : p.getName();
-                Map<String, Object> ps = schemaOf(p.getParameterizedType());
-                if (pa != null && !pa.value().isEmpty()) {
-                    ps.put("description", pa.value());
+                Param param = parameter.getAnnotation(Param.class);
+                // 参数名来自 @Param(name)，否则用编译后的参数名（需要 -parameters 编译选项）
+                String paramName = param != null && !param.name().isEmpty() ? param.name() : parameter.getName();
+                Map<String, Object> property = schemaOf(parameter.getParameterizedType());
+                if (param != null && !param.value().isEmpty()) {
+                    property.put("description", param.value());
                 }
-                props.put(pn, ps);
-                boolean optional = p.getType() == Optional.class || (pa != null && !pa.required());
+                properties.put(paramName, property);
+                boolean optional = parameter.getType() == Optional.class || (param != null && !param.required());
                 if (!optional) {
-                    required.add(pn);
+                    required.add(paramName);
                 }
-                paramNames.add(pn);
-                paramTypes.add(Json.MAPPER.getTypeFactory().constructType(p.getParameterizedType()));
+                paramNames.add(paramName);
+                paramTypes.add(Json.MAPPER.getTypeFactory().constructType(parameter.getParameterizedType()));
             }
-            Map<String, Object> s = new LinkedHashMap<>();
-            s.put("type", "object");
-            s.put("properties", props);
+            Map<String, Object> objectSchema = new LinkedHashMap<>();
+            objectSchema.put("type", "object");
+            objectSchema.put("properties", properties);
             if (!required.isEmpty()) {
-                s.put("required", required);
+                objectSchema.put("required", required);
             }
-            this.schema = s;
+            this.schema = objectSchema;
         }
 
         @Override
@@ -184,57 +208,62 @@ public final class AnnotatedTools {
             return meta.readOnly() ? PermissionLevel.ALLOW : PermissionLevel.ASK;
         }
 
+        /** timeoutSeconds：负数 = 不限时，0 = 默认 10 分钟，正数 = 指定秒数。 */
         @Override
         public Duration timeout() {
-            return meta.timeoutSeconds() < 0 ? null : meta.timeoutSeconds() == 0 ? Duration.ofMinutes(10)
-                    : Duration.ofSeconds(meta.timeoutSeconds());
+            if (meta.timeoutSeconds() < 0) {
+                return null;
+            }
+            return meta.timeoutSeconds() == 0 ? DEFAULT_TIMEOUT : Duration.ofSeconds(meta.timeoutSeconds());
         }
 
         @Override
         public ToolOutput execute(Map<String, Object> arguments, ToolContext context) throws Exception {
-            Object[] args = new Object[paramNames.size()];
-            for (int i = 0; i < args.length; i++) {
-                if (paramNames.get(i) == null) {
-                    args[i] = context;
-                    continue;
-                }
-                Object v = arguments.get(paramNames.get(i));
-                JavaType jt = paramTypes.get(i);
-                if (jt.getRawClass() == Optional.class) {
-                    args[i] = Optional.ofNullable(v == null ? null : Json.MAPPER.convertValue(v, jt.containedType(0)));
-                } else {
-                    args[i] = v == null ? (jt.isPrimitive() ? Json.MAPPER.convertValue(0, jt) : null) : Json.MAPPER.convertValue(v, jt);
-                }
+            Object[] values = new Object[paramNames.size()];
+            for (int i = 0; i < values.length; i++) {
+                values[i] = paramNames.get(i) == null ? context : convert(arguments.get(paramNames.get(i)), paramTypes.get(i));
             }
             Object result;
             try {
-                result = method.invoke(bean, args);
+                result = method.invoke(bean, values);
             } catch (InvocationTargetException e) {
-                if (e.getCause() instanceof Exception ex) {
-                    throw ex;
+                if (e.getCause() instanceof Exception thrown) {
+                    throw thrown; // 让 ToolException 等原样到达引擎
                 }
                 throw e;
             }
             return toOutput(result);
         }
+
+        /** 没传的参数：Optional → empty，基本类型 → 0/false，其他 → null。 */
+        private static Object convert(Object value, JavaType type) {
+            if (type.getRawClass() == Optional.class) {
+                return Optional.ofNullable(value == null ? null : Json.MAPPER.convertValue(value, type.containedType(0)));
+            }
+            if (value == null) {
+                return type.isPrimitive() ? Json.MAPPER.convertValue(0, type) : null;
+            }
+            return Json.MAPPER.convertValue(value, type);
+        }
     }
 
+    /** 方法返回值 → 工具结果：ToolOutput 原样；字符串当文本；内容块直接用；其他对象转成格式化的 JSON。 */
     @SuppressWarnings("unchecked")
     static ToolOutput toOutput(Object result) {
-        if (result instanceof ToolOutput o) {
-            return o;
+        if (result instanceof ToolOutput output) {
+            return output;
         }
         if (result == null) {
             return ToolOutput.text("(no output)");
         }
-        if (result instanceof String s) {
-            return ToolOutput.text(s);
+        if (result instanceof String text) {
+            return ToolOutput.text(text);
         }
-        if (result instanceof ContentBlock b) {
-            return new ToolOutput(List.of(b), false, Map.of());
+        if (result instanceof ContentBlock block) {
+            return new ToolOutput(List.of(block), false, Map.of());
         }
-        if (result instanceof List<?> l && !l.isEmpty() && l.stream().allMatch(ContentBlock.class::isInstance)) {
-            return new ToolOutput((List<ContentBlock>) l, false, Map.of());
+        if (result instanceof List<?> list && !list.isEmpty() && list.stream().allMatch(ContentBlock.class::isInstance)) {
+            return new ToolOutput((List<ContentBlock>) list, false, Map.of());
         }
         return ToolOutput.text(Json.pretty(result));
     }

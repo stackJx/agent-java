@@ -35,6 +35,6 @@ final class StreamEventForwarder implements ModelStreamListener {
 
     @Override
     public void onMalformedOutput(String error) {
-        emit.accept(new AgentEvent.Notice("warning", "malformed model output, retrying the turn: " + error));
+        emit.accept(AgentEvent.Notice.warning("malformed model output, retrying the turn: " + error));
     }
 }

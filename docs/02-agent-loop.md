@@ -59,7 +59,7 @@ sequenceDiagram
 
 ## 2. 主循环流程图
 
-图里的 ①～⑩ 和 `AgentEngine.Run#execute` 代码注释里的编号一一对应。
+图里的 ①～⑩ 和 `AgentEngine.Run` 里各方法上的编号一一对应：`execute` 是总流程，`start` 是 ①②，`loop` 是 ③④ 并把每一轮串起来，`callModel` 是 ⑤⑥，`saveReply` 是 ⑦，`decideNext` 是 ⑧～⑩。
 
 ```mermaid
 flowchart TD
@@ -72,7 +72,7 @@ flowchart TD
     s4 -- 是 --> compact["压缩：旧对话 → 摘要"] --> s5
     s4 -- 否 --> s5["⑤ 组装请求<br/>系统提示词 + 全部消息 + 工具列表<br/>经过 beforeModel 钩子"]
     s5 --> s6["⑥ 调模型（流式）<br/>可重试错误自动退避重试"]
-    s6 -- 上下文超窗 --> overflow["压缩后重做本轮<br/>最多 2 次"] --> s3
+    s6 -- 上下文超窗 --> overflow["压缩后重新组装请求<br/>仍算同一轮，整次运行最多 2 次"] --> s5
     s6 --> s7["⑦ 保存助手回复，afterModel 钩子"]
     s7 --> s8{"⑧ 看停止原因"}
     s8 -- "PAUSE_TURN 且无工具调用" --> s3

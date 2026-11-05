@@ -10,38 +10,45 @@ import java.util.List;
 public final class ConsoleApprover implements Approver {
 
     private final ConsoleIO io;
-    private final Ansi a;
+    private final Ansi ansi;
+
+    private static final int PREVIEW_LINES = 12;
 
     public ConsoleApprover(ConsoleIO io, Ansi ansi) {
         this.io = io;
-        this.a = ansi;
+        this.ansi = ansi;
     }
 
     @Override
-    public Approval approve(PermissionRequest req) {
-        io.err().println(a.yellow("\n? 允许执行 " + Texts.clip(req.summary(), 300)));
-        if (req.tool().equals("write_file") || req.tool().equals("edit_file")) {
-            Object preview = req.arguments().getOrDefault("new_string", req.arguments().get("content"));
-            if (preview != null) {
-                List<String> lines = String.valueOf(preview).lines().toList();
-                StringBuilder sb = new StringBuilder();
-                lines.stream().limit(12).forEach(l -> sb.append("    ").append(l).append('\n'));
-                if (lines.size() > 12) {
-                    sb.append("    … (+").append(lines.size() - 12).append(" lines)\n");
-                }
-                io.err().print(a.dim(sb.toString()));
-            }
+    public Approval approve(PermissionRequest request) {
+        io.err().println(ansi.yellow("\n? 允许执行 " + Texts.clip(request.summary(), 300)));
+        if (request.tool().equals("write_file") || request.tool().equals("edit_file")) {
+            printPreview(request.arguments().getOrDefault("new_string", request.arguments().get("content")));
         }
-        String ans = io.readLine("  [y]允许 / [a]总是允许 / [n]拒绝（也可直接输入拒绝理由）: ");
-        if (ans == null) {
+        String input = io.readLine("  [y]允许 / [a]总是允许 / [n]拒绝（也可直接输入拒绝理由）: ");
+        if (input == null) {
             return Approval.deny("no input available");
         }
-        String s = ans.strip();
-        return switch (s.toLowerCase()) {
+        String answer = input.strip();
+        return switch (answer.toLowerCase()) {
             case "", "y", "yes", "是" -> Approval.allow();
             case "a", "always", "总是" -> Approval.always();
             case "n", "no", "否" -> Approval.deny("");
-            default -> Approval.deny("user denied with feedback: " + s);
+            default -> Approval.deny("user denied with feedback: " + answer); // 其他输入当作拒绝理由交给模型
         };
+    }
+
+    /** 写文件前给用户看一眼要写的内容（前几行）。 */
+    private void printPreview(Object content) {
+        if (content == null) {
+            return;
+        }
+        List<String> lines = String.valueOf(content).lines().toList();
+        StringBuilder preview = new StringBuilder();
+        lines.stream().limit(PREVIEW_LINES).forEach(line -> preview.append("    ").append(line).append('\n'));
+        if (lines.size() > PREVIEW_LINES) {
+            preview.append("    … (+").append(lines.size() - PREVIEW_LINES).append(" lines)\n");
+        }
+        io.err().print(ansi.dim(preview.toString()));
     }
 }

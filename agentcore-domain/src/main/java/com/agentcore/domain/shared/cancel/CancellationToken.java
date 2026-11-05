@@ -18,9 +18,9 @@ public final class CancellationToken {
             return;
         }
         cancelled = true;
-        for (Runnable r : callbacks) {
+        for (Runnable callback : callbacks) {
             try {
-                r.run();
+                callback.run();
             } catch (RuntimeException ignored) {
                 // 回调失败不影响取消
             }

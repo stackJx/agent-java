@@ -74,19 +74,19 @@ public final class McpClient implements AutoCloseable {
             throw new McpException("MCP server '" + name + "' is closed");
         }
         long id = ids.incrementAndGet();
-        CompletableFuture<JsonNode> f = new CompletableFuture<>();
-        pending.put(id, f);
-        ObjectNode msg = Json.object().put("jsonrpc", "2.0").put("id", id).put("method", method);
+        CompletableFuture<JsonNode> answer = new CompletableFuture<>();
+        pending.put(id, answer);
+        ObjectNode message = Json.object().put("jsonrpc", "2.0").put("id", id).put("method", method);
         if (params != null) {
-            msg.set("params", params);
+            message.set("params", params);
         }
         try {
-            transport.send(msg);
-            JsonNode reply = f.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            transport.send(message);
+            JsonNode reply = answer.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             if (reply.has("error")) {
-                JsonNode err = reply.get("error");
-                throw new McpException(name + ": " + method + " failed: " + err.path("message").asText() + " (code "
-                        + err.path("code").asText() + ")");
+                JsonNode error = reply.get("error");
+                throw new McpException(name + ": " + method + " failed: " + error.path("message").asText() + " (code "
+                        + error.path("code").asText() + ")");
             }
             return reply.path("result");
         } catch (TimeoutException e) {
@@ -99,25 +99,26 @@ public final class McpClient implements AutoCloseable {
     }
 
     public void notify(String method, JsonNode params) throws Exception {
-        ObjectNode msg = Json.object().put("jsonrpc", "2.0").put("method", method);
+        ObjectNode message = Json.object().put("jsonrpc", "2.0").put("method", method);
         if (params != null) {
-            msg.set("params", params);
+            message.set("params", params);
         }
-        transport.send(msg);
+        transport.send(message);
     }
 
-    private void onMessage(JsonNode msg) {
-        if (msg.has("id") && (msg.has("result") || msg.has("error"))) {
-            CompletableFuture<JsonNode> f = pending.get(msg.get("id").asLong());
-            if (f != null) {
-                f.complete(msg);
+    /** 收到的消息：对我方请求的回复 → 交给等待者；服务端发来的请求 → 回复（只支持 ping 和 roots/list）。 */
+    private void onMessage(JsonNode message) {
+        if (message.has("id") && (message.has("result") || message.has("error"))) {
+            CompletableFuture<JsonNode> answer = pending.get(message.get("id").asLong());
+            if (answer != null) {
+                answer.complete(message);
             }
             return;
         }
-        String method = msg.path("method").asText(null);
-        if (method != null && msg.has("id")) { // 服务端 → 客户端请求
+        String method = message.path("method").asText(null);
+        if (method != null && message.has("id")) { // 服务端 → 客户端请求
             ObjectNode reply = Json.object().put("jsonrpc", "2.0");
-            reply.set("id", msg.get("id"));
+            reply.set("id", message.get("id"));
             switch (method) {
                 case "ping" -> reply.putObject("result");
                 case "roots/list" -> reply.putObject("result").putArray("roots");
@@ -136,9 +137,9 @@ public final class McpClient implements AutoCloseable {
 
     private void onClose() {
         closed = true;
-        ObjectNode err = Json.object();
-        err.putObject("error").put("code", -32000).put("message", "MCP server closed the connection" + transport.diagnostics());
-        pending.values().forEach(f -> f.complete(err));
+        ObjectNode error = Json.object();
+        error.putObject("error").put("code", -32000).put("message", "MCP server closed the connection" + transport.diagnostics());
+        pending.values().forEach(answer -> answer.complete(error));
     }
 
     public List<JsonNode> listTools() throws Exception {

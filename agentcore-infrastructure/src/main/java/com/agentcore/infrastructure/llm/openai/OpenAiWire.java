@@ -24,78 +24,96 @@ public final class OpenAiWire {
     }
 
     public static ArrayNode toWire(String system, List<Message> messages, boolean echoReasoning) {
-        ArrayNode out = Json.array();
+        ArrayNode wire = Json.array();
         if (system != null && !system.isEmpty()) {
-            out.add(Json.object().put("role", "system").put("content", system));
+            wire.add(Json.object().put("role", "system").put("content", system));
         }
-        for (Message m : messages) {
-            if (m.role() == Role.ASSISTANT) {
-                ObjectNode msg = Json.object().put("role", "assistant");
-                String text = m.text();
-                List<ToolCall> calls = m.toolCalls();
-                if (text.isEmpty()) {
-                    if (calls.isEmpty()) {
-                        msg.put("content", "");
-                    } else {
-                        msg.putNull("content");
-                    }
-                } else {
-                    msg.put("content", text);
-                }
-                if (!calls.isEmpty()) {
-                    ArrayNode tcs = msg.putArray("tool_calls");
-                    for (ToolCall c : calls) {
-                        ObjectNode tc = tcs.addObject().put("id", c.id()).put("type", "function");
-                        tc.putObject("function").put("name", c.name())
-                                .put("arguments", c.rawArguments() != null ? c.rawArguments() : Json.write(c.arguments()));
-                    }
-                }
-                if (echoReasoning) {
-                    // DeepSeek 思考模式：带 tools 的请求必须回传历史 reasoning_content，否则 400
-                    String rc = m.content().stream()
-                            .filter(b -> b instanceof ThinkingBlock t && PROVIDER.equals(t.provider()))
-                            .map(b -> ((ThinkingBlock) b).text()).collect(Collectors.joining());
-                    if (!rc.isEmpty()) {
-                        msg.put("reasoning_content", rc);
-                    }
-                }
-                out.add(msg);
-                continue;
-            }
-            List<ObjectNode> parts = new ArrayList<>();
-            for (ContentBlock b : m.content()) {
-                switch (b) {
-                    case ToolResult r -> {
-                        String text = r.text().isEmpty() ? (r.isError() ? "(error)" : "(no output)") : r.text();
-                        if (r.isError() && !text.toLowerCase().startsWith("error")) {
-                            text = "Error: " + text;
-                        }
-                        out.add(Json.object().put("role", "tool").put("tool_call_id", r.toolCallId()).put("content", text));
-                        r.images().forEach(i -> parts.add(imagePart(i))); // tool 消息只支持文本，图片放到随后的 user 消息
-                    }
-                    case TextBlock t when !t.text().isEmpty() -> parts.add(Json.object().put("type", "text").put("text", t.text()));
-                    case ImageBlock i -> parts.add(imagePart(i));
-                    default -> { }
-                }
-            }
-            if (!parts.isEmpty()) {
-                ObjectNode user = Json.object().put("role", "user");
-                if (parts.stream().allMatch(p -> "text".equals(p.path("type").asText()))) {
-                    user.put("content", parts.stream().map(p -> p.path("text").asText()).collect(Collectors.joining("\n\n")));
-                } else {
-                    ArrayNode arr = user.putArray("content");
-                    parts.forEach(arr::add);
-                }
-                out.add(user);
+        for (Message message : messages) {
+            if (message.role() == Role.ASSISTANT) {
+                wire.add(assistantMessage(message, echoReasoning));
+            } else {
+                addUserMessages(message, wire);
             }
         }
-        return out;
+        return wire;
     }
 
-    static ObjectNode imagePart(ImageBlock i) {
-        String url = i.url() != null ? i.url() : "data:" + i.mediaType() + ";base64," + i.data();
-        ObjectNode n = Json.object().put("type", "image_url");
-        n.putObject("image_url").put("url", url);
-        return n;
+    /** 助手消息：文字放 content（只有工具调用时 content 为 null），工具调用放 tool_calls。 */
+    private static ObjectNode assistantMessage(Message message, boolean echoReasoning) {
+        ObjectNode wire = Json.object().put("role", "assistant");
+        String text = message.text();
+        List<ToolCall> calls = message.toolCalls();
+        if (!text.isEmpty()) {
+            wire.put("content", text);
+        } else if (calls.isEmpty()) {
+            wire.put("content", "");
+        } else {
+            wire.putNull("content");
+        }
+        if (!calls.isEmpty()) {
+            ArrayNode toolCalls = wire.putArray("tool_calls");
+            for (ToolCall call : calls) {
+                ObjectNode toolCall = toolCalls.addObject().put("id", call.id()).put("type", "function");
+                toolCall.putObject("function").put("name", call.name())
+                        .put("arguments", call.rawArguments() != null ? call.rawArguments() : Json.write(call.arguments()));
+            }
+        }
+        if (echoReasoning) {
+            // DeepSeek 思考模式：带 tools 的请求必须回传历史 reasoning_content，否则 400
+            String reasoning = message.content().stream()
+                    .filter(block -> block instanceof ThinkingBlock thinking && PROVIDER.equals(thinking.provider()))
+                    .map(block -> ((ThinkingBlock) block).text()).collect(Collectors.joining());
+            if (!reasoning.isEmpty()) {
+                wire.put("reasoning_content", reasoning);
+            }
+        }
+        return wire;
+    }
+
+    /**
+     * 用户消息（领域里工具结果也在用户消息里）：每个工具结果变成一条 role=tool 消息；
+     * 文字和图片合成随后的一条 user 消息（tool 消息只支持文本，工具结果里的图片也放到这里）。
+     */
+    private static void addUserMessages(Message message, ArrayNode wire) {
+        List<ObjectNode> parts = new ArrayList<>();
+        for (ContentBlock block : message.content()) {
+            switch (block) {
+                case ToolResult result -> {
+                    wire.add(Json.object().put("role", "tool").put("tool_call_id", result.toolCallId()).put("content", toolResultText(result)));
+                    result.images().forEach(image -> parts.add(imagePart(image)));
+                }
+                case TextBlock text when !text.text().isEmpty() -> parts.add(Json.object().put("type", "text").put("text", text.text()));
+                case ImageBlock image -> parts.add(imagePart(image));
+                default -> { }
+            }
+        }
+        if (parts.isEmpty()) {
+            return;
+        }
+        ObjectNode user = Json.object().put("role", "user");
+        if (parts.stream().allMatch(part -> "text".equals(part.path("type").asText()))) {
+            // 纯文字时用字符串而不是数组，兼容性最好
+            user.put("content", parts.stream().map(part -> part.path("text").asText()).collect(Collectors.joining("\n\n")));
+        } else {
+            ArrayNode content = user.putArray("content");
+            parts.forEach(content::add);
+        }
+        wire.add(user);
+    }
+
+    /** 工具结果的文字：空结果给个占位；出错的结果保证以 "Error" 开头，模型一眼能看出来。 */
+    static String toolResultText(ToolResult result) {
+        String text = result.text().isEmpty() ? (result.isError() ? "(error)" : "(no output)") : result.text();
+        if (result.isError() && !text.toLowerCase().startsWith("error")) {
+            text = "Error: " + text;
+        }
+        return text;
+    }
+
+    static ObjectNode imagePart(ImageBlock image) {
+        String url = image.url() != null ? image.url() : "data:" + image.mediaType() + ";base64," + image.data();
+        ObjectNode part = Json.object().put("type", "image_url");
+        part.putObject("image_url").put("url", url);
+        return part;
     }
 }

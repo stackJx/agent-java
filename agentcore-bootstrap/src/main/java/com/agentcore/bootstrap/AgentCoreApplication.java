@@ -2,6 +2,7 @@ package com.agentcore.bootstrap;
 
 import com.agentcore.application.AgentService;
 import com.agentcore.domain.agent.model.RunResult;
+import com.agentcore.domain.conversation.model.Conversation;
 import com.agentcore.domain.conversation.model.ConversationSummary;
 import com.agentcore.domain.conversation.repository.ConversationRepository;
 import com.agentcore.domain.llm.model.StopReason;
@@ -18,6 +19,7 @@ import com.agentcore.interfaces.cli.ConsoleIO;
 import com.agentcore.interfaces.cli.ConsolePrompter;
 import com.agentcore.interfaces.cli.ConsoleRenderer;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,18 +27,16 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.function.Consumer;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.event.ApplicationEnvironmentPreparedEvent;
-import org.springframework.context.ApplicationListener;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.context.support.GenericApplicationContext;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.Environment;
 
 /**
  * 独立部署版的入口（{@code bin/agentcore}）。它就是一个普通的 Spring Boot 应用：
@@ -56,95 +56,8 @@ public class AgentCoreApplication {
 
     /** 内置默认配置；用户配置由它导入（见 agentcore-cli.yml）。 */
     static final String CLI_CONFIG = "classpath:/agentcore-cli.yml";
-    static final String DATASOURCE_AUTO_CONFIG = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration";
-
-    static final class Args {
-        String command = "chat";
-        String model;
-        String config;
-        String cwd;
-        String resume;
-        boolean continueLast;
-        boolean yolo;
-        boolean readonly;
-        boolean noSession;
-        boolean hideThinking;
-        boolean events;
-        Integer port;
-        String host;
-        /** 原样交给 Spring 的参数：--spring.xxx=...、--agentcore.xxx=...、--debug 等。 */
-        final List<String> spring = new ArrayList<>();
-        /** 其余参数：run 的任务描述。 */
-        final List<String> rest = new ArrayList<>();
-
-        static Args parse(String[] argv) {
-            Args a = new Args();
-            for (int i = 0; i < argv.length; i++) {
-                String s = argv[i];
-                switch (s) {
-                    case "-m", "--model" -> a.model = argv[++i];
-                    case "--config" -> a.config = argv[++i];
-                    case "--cwd" -> a.cwd = argv[++i];
-                    case "--resume" -> a.resume = argv[++i];
-                    case "-c", "--continue" -> a.continueLast = true;
-                    case "--yolo" -> a.yolo = true;
-                    case "--readonly" -> a.readonly = true;
-                    case "--no-session" -> a.noSession = true;
-                    case "--hide-thinking" -> a.hideThinking = true;
-                    case "--events" -> a.events = true;
-                    case "--port" -> a.port = Integer.parseInt(argv[++i]);
-                    case "--host" -> a.host = argv[++i];
-                    case "-h", "--help" -> a.command = "help";
-                    case "chat", "run", "serve", "sessions", "init", "help" -> {
-                        if (a.rest.isEmpty() && a.command.equals("chat")) {
-                            a.command = s;
-                        } else {
-                            a.rest.add(s);
-                        }
-                    }
-                    default -> (s.startsWith("--") ? a.spring : a.rest).add(s);
-                }
-            }
-            return a;
-        }
-
-        Path cwdPath() {
-            return Path.of(cwd == null ? "." : cwd).toAbsolutePath().normalize();
-        }
-
-        /** ① 命令行选项 → Spring 配置项。以命令行参数的形式传入，优先级高于所有配置文件。 */
-        List<String> toSpringArgs() {
-            List<String> out = new ArrayList<>();
-            out.add("--agentcore.agent.working-directory=" + cwdPath());
-            if (model != null) {
-                out.add("--agentcore.model=" + model);
-            }
-            if (yolo) {
-                out.add("--agentcore.permissions.mode=auto");
-            }
-            if (readonly) {
-                out.add("--agentcore.permissions.mode=readonly");
-            }
-            if (noSession) {
-                out.add("--agentcore.sessions.enabled=false");
-            }
-            if (port != null) {
-                out.add("--server.port=" + port);
-            }
-            if (host != null) {
-                out.add("--server.address=" + host);
-            }
-            if (config != null) {
-                Path p = Path.of(config).toAbsolutePath().normalize();
-                if (!Files.isRegularFile(p)) {
-                    throw new IllegalArgumentException("配置文件不存在：" + p);
-                }
-                out.add("--spring.config.additional-location=file:" + p);
-            }
-            out.addAll(spring);
-            return out;
-        }
-    }
+    /** agentcore init 生成的配置模板。 */
+    static final String CONFIG_TEMPLATE = "/agentcore-template.yaml";
 
     private static final String USAGE = """
             agentcore —— 通用 Agent 底座（Java / DDD / Spring Boot）
@@ -172,25 +85,26 @@ public class AgentCoreApplication {
         System.exit(run(argv));
     }
 
+    /** ① 解析参数 → 按命令分发。返回进程退出码。 */
     public static int run(String[] argv) {
-        Args a;
+        CliArgs args;
         try {
-            a = Args.parse(argv);
+            args = CliArgs.parse(argv);
         } catch (RuntimeException e) {
             System.err.println("参数错误：" + e.getMessage() + "\n\n" + USAGE);
             return 2;
         }
         try {
-            return switch (a.command) {
+            return switch (args.command) {
                 case "help" -> {
                     System.out.println(USAGE);
                     yield 0;
                 }
-                case "init" -> init(a);       // help / init 不需要启动 Spring
-                case "sessions" -> sessions(a);
-                case "run" -> runOnce(a);
-                case "serve" -> serve(a);
-                default -> chat(a);
+                case "init" -> init(args);       // help / init 不需要启动 Spring
+                case "sessions" -> sessions(args);
+                case "run" -> runOnce(args);
+                case "serve" -> serve(args);
+                default -> chat(args);
             };
         } catch (RuntimeException e) {
             // 启动失败（没配模型、配置写错……）和命令本身的错误：只打印最根本的原因
@@ -202,62 +116,63 @@ public class AgentCoreApplication {
     // ------------------------------------------------------------------ ② 启动 Spring 容器
 
     /**
-     * @param web         true 时启动内嵌 Web 服务（serve），否则只建容器不监听端口
-     * @param registrar   在容器刷新前注册额外的 Bean（例如命令行的审批人）
-     * @param extraArgs   额外的 Spring 配置
+     * @param web        true 时启动内嵌 Web 服务（serve），否则只建容器不监听端口
+     * @param registrar  在容器刷新前注册额外的 Bean（例如命令行的审批人）
+     * @param extraArgs  额外的 Spring 配置
      */
-    static ConfigurableApplicationContext start(Args a, boolean web, Consumer<GenericApplicationContext> registrar, String... extraArgs) {
+    static ConfigurableApplicationContext start(CliArgs args, boolean web, Consumer<GenericApplicationContext> registrar,
+                                                String... extraArgs) {
         SpringApplication app = new SpringApplication(AgentCoreApplication.class);
         app.setWebApplicationType(web ? WebApplicationType.SERVLET : WebApplicationType.NONE);
         // 只读内置配置（它再导入用户配置），不读当前目录的 application.yml
         app.setDefaultProperties(Map.of("spring.config.location", CLI_CONFIG));
         app.addListeners(new OptionalDataSource());
         if (registrar != null) {
-            app.addInitializers(ctx -> registrar.accept((GenericApplicationContext) ctx));
+            app.addInitializers(context -> registrar.accept((GenericApplicationContext) context));
         }
-        List<String> args = new ArrayList<>(a.toSpringArgs());
-        args.addAll(List.of(extraArgs));
-        return app.run(args.toArray(String[]::new));
-    }
-
-    /**
-     * 没配置 spring.datasource.url 时排除数据源自动装配：Spring Boot 在 classpath 上有 JDBC 却没有地址时会启动失败，
-     * 而命令行默认用文件存储，不需要数据库。
-     */
-    static final class OptionalDataSource implements ApplicationListener<ApplicationEnvironmentPreparedEvent> {
-        @Override
-        public void onApplicationEvent(ApplicationEnvironmentPreparedEvent event) {
-            ConfigurableEnvironment env = event.getEnvironment();
-            if (env.containsProperty("spring.datasource.url")) {
-                return;
-            }
-            String existing = env.getProperty("spring.autoconfigure.exclude", "");
-            String value = existing.isBlank() ? DATASOURCE_AUTO_CONFIG : existing + "," + DATASOURCE_AUTO_CONFIG;
-            env.getPropertySources().addFirst(new MapPropertySource("agentcoreOptionalDataSource",
-                    Map.of("spring.autoconfigure.exclude", value)));
-        }
+        List<String> springArgs = new ArrayList<>(args.toSpringArgs());
+        springArgs.addAll(List.of(extraArgs));
+        return app.run(springArgs.toArray(String[]::new));
     }
 
     // ------------------------------------------------------------------ ③ 命令
 
-    private static int chat(Args a) {
+    private static int chat(CliArgs args) {
         ConsoleIO io = ConsoleIO.system();
         Ansi ansi = Ansi.auto();
         // 交互模式：审批和 ask_user 都在终端里问
-        try (ConfigurableApplicationContext ctx = start(a, false, c -> {
-            c.registerBean("agentConsoleApprover", Approver.class, () -> new ConsoleApprover(io, ansi));
-            c.registerBean("agentConsolePrompter", UserPrompter.class, () -> new ConsolePrompter(io));
+        try (ConfigurableApplicationContext context = start(args, false, beans -> {
+            beans.registerBean("agentConsoleApprover", Approver.class, () -> new ConsoleApprover(io, ansi));
+            beans.registerBean("agentConsolePrompter", UserPrompter.class, () -> new ConsolePrompter(io));
         })) {
-            AgentService service = ctx.getBean(AgentService.class);
-            MemoryRepository memory = ctx.getBeanProvider(MemoryRepository.class).getIfAvailable();
-            return new ChatRepl(service, memory, warnings(ctx), io, ansi, !a.hideThinking, conversation(service, a)).run();
+            AgentService service = context.getBean(AgentService.class);
+            MemoryRepository memory = context.getBeanProvider(MemoryRepository.class).getIfAvailable();
+            return new ChatRepl(service, memory, warnings(context), io, ansi, !args.hideThinking, conversation(service, args)).run();
         }
     }
 
     /** 一次性执行。非交互：没有审批人，需要询问的操作一律拒绝（要放行就加 --yolo 或配置 allow 规则）。 */
-    private static int runOnce(Args a) {
+    private static int runOnce(CliArgs args) {
         ConsoleIO io = ConsoleIO.system();
-        String prompt = String.join(" ", a.rest).strip();
+        String prompt = taskFrom(args);
+        try (ConfigurableApplicationContext context = start(args, false, null)) {
+            AgentService service = context.getBean(AgentService.class);
+            warnings(context).forEach((source, problem) -> io.err().println(source + "：" + problem));
+            String id = conversation(service, args);
+            RunResult result;
+            if (args.events) {
+                result = service.chat(id, prompt, event -> io.out().println(Json.write(EventCodec.encode(event))));
+            } else {
+                result = service.chat(id, prompt, new ConsoleRenderer(io.out(), io.err(), Ansi.auto(), !args.hideThinking));
+                io.out().println();
+            }
+            return result.stopReason() == StopReason.END_TURN && result.error() == null ? 0 : 1;
+        }
+    }
+
+    /** 任务描述：命令行上的剩余参数；没有就从 stdin 读（方便 echo "..." | agentcore run）。 */
+    private static String taskFrom(CliArgs args) {
+        String prompt = String.join(" ", args.rest).strip();
         if (prompt.isEmpty()) {
             try {
                 prompt = new String(System.in.readAllBytes(), StandardCharsets.UTF_8).strip();
@@ -268,32 +183,20 @@ public class AgentCoreApplication {
         if (prompt.isEmpty()) {
             throw new IllegalArgumentException("请提供任务描述");
         }
-        try (ConfigurableApplicationContext ctx = start(a, false, null)) {
-            AgentService service = ctx.getBean(AgentService.class);
-            warnings(ctx).forEach((k, v) -> io.err().println(k + "：" + v));
-            String id = conversation(service, a);
-            RunResult r;
-            if (a.events) {
-                r = service.chat(id, prompt, e -> io.out().println(Json.write(EventCodec.encode(e))));
-            } else {
-                r = service.chat(id, prompt, new ConsoleRenderer(io.out(), io.err(), Ansi.auto(), !a.hideThinking));
-                io.out().println();
-            }
-            return r.stopReason() == StopReason.END_TURN && r.error() == null ? 0 : 1;
-        }
+        return prompt;
     }
 
     /** HTTP + SSE 服务：控制器、Web 审批、token 鉴权都来自 starter 的 Web 自动装配。阻塞到进程收到停止信号。 */
-    private static int serve(Args a) {
+    private static int serve(CliArgs args) {
         CountDownLatch closed = new CountDownLatch(1);
-        ConfigurableApplicationContext ctx = start(a, true, c -> c.addApplicationListener(e -> {
-            if (e instanceof ContextClosedEvent) {
+        ConfigurableApplicationContext context = start(args, true, beans -> beans.addApplicationListener(event -> {
+            if (event instanceof ContextClosedEvent) {
                 closed.countDown();
             }
         }));
-        warnings(ctx).forEach((k, v) -> System.err.println(k + "：" + v));
-        var env = ctx.getEnvironment();
-        AgentService service = ctx.getBean(AgentService.class);
+        warnings(context).forEach((source, problem) -> System.err.println(source + "：" + problem));
+        Environment env = context.getEnvironment();
+        AgentService service = context.getBean(AgentService.class);
         System.err.println("agentcore HTTP 服务已启动：http://" + env.getProperty("server.address", "0.0.0.0") + ":"
                 + env.getProperty("local.server.port") + env.getProperty("agentcore.web.base-path", "/api/agent")
                 + "  (" + service.engine().model().describe() + ")");
@@ -306,21 +209,41 @@ public class AgentCoreApplication {
     }
 
     /** 列出会话：只需要仓储，用懒加载启动，不创建模型、不启动 MCP 服务器。 */
-    private static int sessions(Args a) {
-        try (ConfigurableApplicationContext ctx = start(a, false, null, "--spring.main.lazy-initialization=true")) {
-            for (ConversationSummary c : ctx.getBean(ConversationRepository.class).list(50)) {
-                System.out.printf("%s  %4d msgs  %s%n", c.id(), c.messageCount(), c.title());
+    private static int sessions(CliArgs args) {
+        try (ConfigurableApplicationContext context = start(args, false, null, "--spring.main.lazy-initialization=true")) {
+            for (ConversationSummary summary : context.getBean(ConversationRepository.class).list(50)) {
+                System.out.printf("%s  %4d msgs  %s%n", summary.id(), summary.messageCount(), summary.title());
             }
         }
         return 0;
     }
 
-    private static String conversation(AgentService service, Args a) {
-        if (a.resume != null) {
-            return service.find(a.resume).orElseThrow(() -> new IllegalArgumentException("会话不存在：" + a.resume)).id().value();
+    /** 在当前目录写一份 agentcore.yaml 模板（已存在就不覆盖）。 */
+    private static int init(CliArgs args) {
+        Path file = args.cwdPath().resolve("agentcore.yaml");
+        if (Files.exists(file)) {
+            System.err.println(file + " 已存在");
+            return 1;
         }
-        if (a.continueLast) {
-            var latest = service.latest();
+        try (InputStream template = AgentCoreApplication.class.getResourceAsStream(CONFIG_TEMPLATE)) {
+            Files.write(file, template.readAllBytes());
+        } catch (IOException e) {
+            System.err.println("写入失败：" + e.getMessage());
+            return 1;
+        }
+        System.out.println("已生成 " + file);
+        return 0;
+    }
+
+    // ------------------------------------------------------------------ 工具方法
+
+    /** --resume 指定的会话，或 -c 最近一次会话，否则新建。 */
+    private static String conversation(AgentService service, CliArgs args) {
+        if (args.resume != null) {
+            return service.find(args.resume).orElseThrow(() -> new IllegalArgumentException("会话不存在：" + args.resume)).id().value();
+        }
+        if (args.continueLast) {
+            Optional<Conversation> latest = service.latest();
             if (latest.isPresent()) {
                 return latest.get().id().value();
             }
@@ -329,112 +252,23 @@ public class AgentCoreApplication {
     }
 
     /** 启动期的非致命问题（目前是没起来的 MCP 服务器），显示给用户。 */
-    private static Map<String, String> warnings(ConfigurableApplicationContext ctx) {
-        Map<String, String> out = new LinkedHashMap<>();
-        ctx.getBeanProvider(McpServerManager.class).ifAvailable(m ->
-                m.errors().forEach((k, v) -> out.put("MCP 服务器 " + k + " 启动失败", v)));
-        return out;
+    private static Map<String, String> warnings(ConfigurableApplicationContext context) {
+        Map<String, String> warnings = new LinkedHashMap<>();
+        context.getBeanProvider(McpServerManager.class).ifAvailable(servers ->
+                servers.errors().forEach((server, error) -> warnings.put("MCP 服务器 " + server + " 启动失败", error)));
+        return warnings;
     }
 
-    static String rootMessage(Throwable t) {
-        Throwable root = t;
+    /** 异常链最底层的原因；找不到类时提示怎么加外部 jar。 */
+    static String rootMessage(Throwable failure) {
+        Throwable root = failure;
         while (root.getCause() != null && root.getCause() != root) {
             root = root.getCause();
         }
         if (root instanceof ClassNotFoundException || root instanceof NoClassDefFoundError) {
             return "找不到类 " + root.getMessage() + "。JDBC 驱动等外部 jar 请通过环境变量 AGENTCORE_CLASSPATH 加入";
         }
-        String msg = root.getMessage();
-        return msg == null || msg.isBlank() ? root.getClass().getSimpleName() : msg;
-    }
-
-    // ------------------------------------------------------------------ init
-
-    static final String SAMPLE_CONFIG = """
-            # agentcore 配置，格式与 Spring Boot 的 application.yml 相同。
-            # 读取顺序（后者覆盖前者）：~/.agentcore/config.yaml → ./.agentcore/config.yaml → ./agentcore.yaml → --config 指定的文件。
-            # 可以用 ${ENV_VAR} 或 ${ENV_VAR:默认值} 引用环境变量。
-            agentcore:
-              model: deepseek:deepseek-v4-pro          # 或 anthropic:claude-opus-5-5 / openai:gpt-6-astra / qwen:qwen-max / mock
-
-              providers:
-                deepseek:
-                  api-key-env: DEEPSEEK_API_KEY
-                  # reasoning-effort: high
-                anthropic:
-                  effort: high                         # low / medium / high / xhigh / max
-                # openai:                              # openai:<模型> 默认走 Responses API（/responses）
-                #   reasoning-effort: medium
-                #   reasoning-summary: auto            # 显示思考摘要（部分组织需先完成验证）
-                # 自定义 OpenAI 兼容服务：model 写成 myvllm:<模型名>
-                # type 可选 openai（Chat Completions）或 openai-responses（Responses）
-                # myvllm:
-                #   type: openai
-                #   base-url: http://localhost:8000/v1
-                #   api-key: EMPTY
-                #   context-window: 131072
-
-              agent:
-                name: agentcore
-                max-turns: 100
-                instructions: |
-                  （可选）对 Agent 的额外要求，例如：回答使用简体中文。
-
-              # tools: [read_file, write_file, edit_file, glob, grep, bash, web_fetch, todo_write, ask_user, task]
-
-              permissions:
-                mode: default                          # default / auto（全部放行）/ readonly
-                allow: ["bash(git status*)", "bash(git diff*)", "bash(ls *)"]
-                deny: ["bash(rm -rf *)", "bash(sudo *)"]
-
-              # mcp-servers:
-              #   filesystem:
-              #     command: npx
-              #     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
-
-              subagents:
-                researcher:
-                  description: 只读调研：搜索代码/网页并给出结论
-                  tools: [read_file, glob, grep, web_fetch]
-                  # model: deepseek:deepseek-flash     # 子 Agent 可以用更便宜的模型
-
-              context:
-                threshold: 0.75                        # 估算 token 超过窗口的 75% 时自动压缩
-
-              # 会话与长期记忆存数据库（默认存 ~/.agentcore 下的文件），同时配置下面的 spring.datasource。
-              # JDBC 驱动放到 AGENTCORE_CLASSPATH 里，例如 AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar
-              # persistence:
-              #   jdbc:
-              #     enabled: true
-              #     initialize-schema: create-if-missing   # never：由 DBA 执行建表脚本
-
-              # web:
-              #   token: ${AGENTCORE_TOKEN}          # 设置后接口需要 Authorization: Bearer <token>（health 除外）
-
-            # spring:
-            #   datasource:
-            #     url: jdbc:mysql://localhost:3306/agent?useUnicode=true&characterEncoding=utf8
-            #     username: agent
-            #     password: ${DB_PASSWORD}
-
-            server:
-              port: 8080
-              # address: 0.0.0.0                       # 默认只监听本机
-            """;
-
-    private static int init(Args a) {
-        Path p = a.cwdPath().resolve("agentcore.yaml");
-        if (Files.exists(p)) {
-            System.err.println(p + " 已存在");
-            return 1;
-        }
-        try {
-            Files.writeString(p, SAMPLE_CONFIG);
-        } catch (IOException e) {
-            System.err.println("写入失败：" + e.getMessage());
-            return 1;
-        }
-        System.out.println("已生成 " + p);
-        return 0;
+        String message = root.getMessage();
+        return message == null || message.isBlank() ? root.getClass().getSimpleName() : message;
     }
 }

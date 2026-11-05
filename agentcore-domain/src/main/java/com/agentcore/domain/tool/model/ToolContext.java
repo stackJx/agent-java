@@ -17,8 +17,8 @@ public record ToolContext(Path cwd, String conversationId, String callId, Map<St
                           Consumer<String> progress, CancellationToken cancel, Map<Class<?>, Object> services, int depth) {
 
     public Path resolve(String path) {
-        String p = path.startsWith("~/") ? System.getProperty("user.home") + path.substring(1) : path;
-        Path candidate = Path.of(p);
+        String expanded = path.startsWith("~/") ? System.getProperty("user.home") + path.substring(1) : path;
+        Path candidate = Path.of(expanded);
         return (candidate.isAbsolute() ? candidate : cwd.resolve(candidate)).normalize().toAbsolutePath();
     }
 
@@ -29,7 +29,7 @@ public record ToolContext(Path cwd, String conversationId, String callId, Map<St
     }
 
     public <T> T service(Class<T> type) {
-        Object s = services == null ? null : services.get(type);
-        return s == null ? null : type.cast(s);
+        Object service = services == null ? null : services.get(type);
+        return service == null ? null : type.cast(service);
     }
 }

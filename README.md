@@ -22,7 +22,7 @@
 
 ```bash
 cd agentcore-java
-mvn -q install                                   # 构建并运行 94 个测试，生成 agentcore-bootstrap/target/agentcore.jar
+mvn -q install                                   # 构建并运行 95 个测试，生成 agentcore-bootstrap/target/agentcore.jar
 
 export DEEPSEEK_API_KEY=sk-...                   # 或 ANTHROPIC_API_KEY=...
 bin/agentcore                                    # 交互式对话
@@ -429,7 +429,7 @@ AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
 ## 测试
 
 ```bash
-mvn test        # 94 个测试，不需要任何 API Key
+mvn test        # 95 个测试，不需要任何 API Key
 ```
 
 | 模块 | 覆盖 |

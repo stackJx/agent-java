@@ -24,11 +24,11 @@ public class OrderTools {
 
     @AgentTool(description = "查询订单状态、金额和物流单号", readOnly = true)
     public Order getOrder(@Param("订单号，例如 A1001") String orderId) {
-        Order o = orders.get(orderId);
-        if (o == null) {
+        Order order = orders.get(orderId);
+        if (order == null) {
             throw new ToolException("订单 " + orderId + " 不存在，请让用户核对订单号");
         }
-        return o;
+        return order;
     }
 
     @AgentTool(description = "给订单退款（不可逆操作，需要用户确认）")

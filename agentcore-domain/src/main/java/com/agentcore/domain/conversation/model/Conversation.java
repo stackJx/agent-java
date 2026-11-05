@@ -67,9 +67,9 @@ public final class Conversation extends AggregateRoot<ConversationId> {
     }
 
     public static Conversation start(ConversationId id, Map<String, String> metadata) {
-        Conversation c = new Conversation(id, metadata, Instant.now());
-        c.raise(new ConversationStarted(id, Map.copyOf(c.metadata), c.createdAt));
-        return c;
+        Conversation conversation = new Conversation(id, metadata, Instant.now());
+        conversation.raise(new ConversationStarted(id, Map.copyOf(conversation.metadata), conversation.createdAt));
+        return conversation;
     }
 
     public static Conversation start() {
@@ -81,11 +81,11 @@ public final class Conversation extends AggregateRoot<ConversationId> {
         if (history.isEmpty() || !(history.get(0) instanceof ConversationStarted started)) {
             throw new DomainException("event stream must begin with ConversationStarted");
         }
-        Conversation c = new Conversation(started.conversationId(), started.metadata(), started.occurredAt());
-        for (DomainEvent e : history.subList(1, history.size())) {
-            c.apply(e);
+        Conversation conversation = new Conversation(started.conversationId(), started.metadata(), started.occurredAt());
+        for (DomainEvent event : history.subList(1, history.size())) {
+            conversation.apply(event);
         }
-        return c;
+        return conversation;
     }
 
     /**
@@ -171,11 +171,11 @@ public final class Conversation extends AggregateRoot<ConversationId> {
         List<ContentBlock> content = new ArrayList<>();
         pending.forEach(c -> content.add(byId.get(c.id())));
         if (extra != null) {
-            for (ContentBlock b : extra) {
-                if (!(b instanceof TextBlock) && !(b instanceof ImageBlock)) {
+            for (ContentBlock block : extra) {
+                if (!(block instanceof TextBlock) && !(block instanceof ImageBlock)) {
                     throw new DomainException("extra content may only contain text and images");
                 }
-                content.add(b);
+                content.add(block);
             }
         }
         record(new MessageAppended(id, Message.user(content), null, Instant.now()));

@@ -17,22 +17,22 @@ public interface MemoryRepository {
 
     default List<MemoryEntry> search(String query, int limit) {
         String[] terms = query.toLowerCase().split("\\s+");
-        record Hit(MemoryEntry e, long score) {
+        record Hit(MemoryEntry entry, long score) {
         }
-        return list().stream().map(e -> {
-                    String hay = (e.name() + " " + e.description() + " " + e.content()).toLowerCase();
+        return list().stream().map(entry -> {
+                    String haystack = (entry.name() + " " + entry.description() + " " + entry.content()).toLowerCase();
                     long score = 0;
-                    for (String t : terms) {
-                        if (!t.isEmpty()) {
+                    for (String term : terms) {
+                        if (!term.isEmpty()) {
                             int idx = 0;
-                            while ((idx = hay.indexOf(t, idx)) >= 0) {
+                            while ((idx = haystack.indexOf(term, idx)) >= 0) {
                                 score++;
-                                idx += t.length();
+                                idx += term.length();
                             }
                         }
                     }
-                    return new Hit(e, score);
+                    return new Hit(entry, score);
                 }).filter(h -> h.score > 0).sorted((a, b) -> Long.compare(b.score, a.score)).limit(limit)
-                .map(Hit::e).toList();
+                .map(Hit::entry).toList();
     }
 }

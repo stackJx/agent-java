@@ -34,48 +34,48 @@ public enum JdbcPlatform {
         if (name == null || name.isBlank() || name.equalsIgnoreCase("auto")) {
             return null;
         }
-        JdbcPlatform p = fromProductName(name);
-        if (p == null) {
+        JdbcPlatform platform = fromProductName(name);
+        if (platform == null) {
             throw new IllegalArgumentException("unsupported JDBC platform: " + name
                     + " (supported: h2, mysql, postgresql, oracle, sqlserver, sqlite and compatible databases)");
         }
-        return p;
+        return platform;
     }
 
     /** 根据 JDBC 元数据中的数据库产品名识别。 */
-    public static JdbcPlatform detect(DataSource ds) {
-        try (Connection c = ds.getConnection()) {
-            String product = c.getMetaData().getDatabaseProductName();
-            JdbcPlatform p = fromProductName(product);
-            if (p == null) {
+    public static JdbcPlatform detect(DataSource dataSource) {
+        try (Connection conn = dataSource.getConnection()) {
+            String product = conn.getMetaData().getDatabaseProductName();
+            JdbcPlatform platform = fromProductName(product);
+            if (platform == null) {
                 throw new IllegalStateException("cannot detect JDBC platform for database '" + product
                         + "'; set the platform explicitly (h2 / mysql / postgresql / oracle / sqlserver / sqlite)");
             }
-            return p;
+            return platform;
         } catch (SQLException e) {
             throw new IllegalStateException("cannot connect to database to detect platform: " + e.getMessage(), e);
         }
     }
 
     static JdbcPlatform fromProductName(String product) {
-        String p = product.toLowerCase(Locale.ROOT);
-        if (p.contains("h2")) {
+        String name = product.toLowerCase(Locale.ROOT);
+        if (name.contains("h2")) {
             return H2;
         }
-        if (p.contains("sqlite")) {
+        if (name.contains("sqlite")) {
             return SQLITE;
         }
-        if (p.contains("mysql") || p.contains("mariadb") || p.contains("tidb") || p.equals("oceanbase")) {
+        if (name.contains("mysql") || name.contains("mariadb") || name.contains("tidb") || name.equals("oceanbase")) {
             return MYSQL;
         }
-        if (p.contains("postgres") || p.contains("kingbase") || p.contains("opengauss") || p.contains("gauss")
-                || p.contains("cockroach")) {
+        if (name.contains("postgres") || name.contains("kingbase") || name.contains("opengauss") || name.contains("gauss")
+                || name.contains("cockroach")) {
             return POSTGRESQL;
         }
-        if (p.contains("oracle") || p.contains("dm dbms") || p.equals("dm") || p.contains("dameng")) {
+        if (name.contains("oracle") || name.contains("dm dbms") || name.equals("dm") || name.contains("dameng")) {
             return ORACLE;
         }
-        if (p.contains("sql server") || p.contains("sqlserver") || p.contains("mssql")) {
+        if (name.contains("sql server") || name.contains("sqlserver") || name.contains("mssql")) {
             return SQLSERVER;
         }
         return null;

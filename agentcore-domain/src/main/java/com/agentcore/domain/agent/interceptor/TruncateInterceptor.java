@@ -10,12 +10,12 @@ import java.util.List;
 public final class TruncateInterceptor implements ToolInterceptor {
 
     @Override
-    public ToolOutput intercept(ToolInvocation inv, Chain chain) {
-        ToolOutput out = chain.proceed(inv);
-        int limit = inv.tool().maxOutputChars();
-        List<ContentBlock> content = out.content().stream()
-                .map(b -> b instanceof TextBlock t ? (ContentBlock) new TextBlock(Texts.truncateMiddle(t.text(), limit)) : b)
+    public ToolOutput intercept(ToolInvocation invocation, Chain chain) {
+        ToolOutput output = chain.proceed(invocation);
+        int limit = invocation.tool().maxOutputChars();
+        List<ContentBlock> content = output.content().stream()
+                .map(block -> block instanceof TextBlock text ? (ContentBlock) new TextBlock(Texts.truncateMiddle(text.text(), limit)) : block)
                 .toList();
-        return out.withContent(content);
+        return output.withContent(content);
     }
 }

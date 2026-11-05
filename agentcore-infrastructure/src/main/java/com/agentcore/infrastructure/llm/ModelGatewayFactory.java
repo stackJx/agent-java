@@ -23,6 +23,12 @@ import java.util.function.Function;
  */
 public final class ModelGatewayFactory implements Function<String, ModelGateway> {
 
+    /** Responses 默认的输出上限：推理模型的思考也算输出，留足空间。 */
+    private static final int RESPONSES_MAX_TOKENS = 32_000;
+    private static final int CHAT_MAX_TOKENS = 16_000;
+    /** 没有预设、也没配置时假定的上下文窗口。 */
+    private static final int DEFAULT_CONTEXT_WINDOW = 128_000;
+
     private final Map<String, Map<String, Object>> providers;
     private final Function<String, String> env;
 
@@ -62,106 +68,157 @@ public final class ModelGatewayFactory implements Function<String, ModelGateway>
             throw new IllegalArgumentException("model spec is empty");
         }
         if (spec.equals("mock")) {
-            return new ScriptedModelGateway().otherwise(r -> ScriptedModelGateway.reply("(mock) 你好，我是一个离线假模型。"));
+            return new ScriptedModelGateway().otherwise(request -> ScriptedModelGateway.reply("(mock) 你好，我是一个离线假模型。"));
         }
-        String provider;
-        String model;
-        int idx = spec.indexOf(':');
-        if (idx > 0) {
-            provider = spec.substring(0, idx);
-            model = spec.substring(idx + 1);
-        } else if (spec.startsWith("claude")) {
-            provider = "anthropic";
-            model = spec;
-        } else {
-            throw new IllegalArgumentException("模型需写成 '<provider>:<model>'，例如 deepseek:deepseek-v4-pro，收到: " + spec);
-        }
-        Map<String, Object> cfg = new LinkedHashMap<>(providers.getOrDefault(provider, Map.of()));
-        if (cfg.get("options") instanceof Map<?, ?> opts) {
-            opts.forEach((k, v) -> cfg.put(String.valueOf(k), v));
-        }
-        String type = str(cfg.get("type"), switch (provider) {
+        ModelSpec parsed = ModelSpec.parse(spec);
+        Config config = configFor(parsed.provider());
+        String type = config.string("type", switch (parsed.provider()) {
             case "anthropic" -> "anthropic";
             case "openai" -> "openai-responses"; // OpenAI 新模型的函数调用只支持 Responses
             default -> "openai";
         });
-        if (type.equals("anthropic")) {
-            String key = str(cfg.get("api_key"), null);
-            if (key == null && cfg.get("api_key_env") != null) {
-                key = env.apply(String.valueOf(cfg.get("api_key_env")));
+        return switch (type) {
+            case "anthropic" -> anthropic(parsed.model(), config);
+            case "openai-responses", "responses" -> openAiResponses(parsed, config);
+            case "openai", "openai-chat" -> openAiChat(parsed, config);
+            default -> throw new IllegalArgumentException("未知的 provider type: " + type + "（可选 anthropic / openai / openai-responses）");
+        };
+    }
+
+    /** "provider:model"；省略 provider 时只认 claude 开头的模型名。 */
+    private record ModelSpec(String provider, String model) {
+        static ModelSpec parse(String spec) {
+            int colon = spec.indexOf(':');
+            if (colon > 0) {
+                return new ModelSpec(spec.substring(0, colon), spec.substring(colon + 1));
             }
-            return new AnthropicModelGateway(model, new AnthropicModelGateway.Options(
-                    key, str(cfg.get("base_url"), null), intOrNull(cfg.get("max_tokens")), intOrNull(cfg.get("context_window")),
-                    boolOrNull(cfg.get("thinking")), str(cfg.get("thinking_display"), null), str(cfg.get("effort"), null),
-                    boolOrNull(cfg.get("fallbacks")), boolOrNull(cfg.get("eager_input_streaming")), boolOrNull(cfg.get("prompt_cache")),
-                    intOrNull(cfg.get("max_retries")), durationOrNull(cfg.get("timeout_seconds")), mapOf(cfg.get("extra_body"))));
+            if (spec.startsWith("claude")) {
+                return new ModelSpec("anthropic", spec);
+            }
+            throw new IllegalArgumentException("模型需写成 '<provider>:<model>'，例如 deepseek:deepseek-v4-pro，收到: " + spec);
         }
-        ProviderPresets.Preset p = ProviderPresets.PRESETS.get(provider);
-        String keyEnv = str(cfg.get("api_key_env"), p != null ? p.apiKeyEnv() : null);
-        String key = str(cfg.get("api_key"), p != null ? p.apiKey() : null);
-        if (key == null && keyEnv != null) {
-            key = env.apply(keyEnv);
+    }
+
+    /** 配置文件 providers.&lt;name&gt; 段；其中 options 子段的键会摊平到同一层。 */
+    private Config configFor(String provider) {
+        Map<String, Object> values = new LinkedHashMap<>(providers.getOrDefault(provider, Map.of()));
+        if (values.get("options") instanceof Map<?, ?> nested) {
+            nested.forEach((key, value) -> values.put(String.valueOf(key), value));
         }
-        if (key == null) {
-            key = env.apply("OPENAI_API_KEY");
+        return new Config(values);
+    }
+
+    private ModelGateway anthropic(String model, Config config) {
+        String apiKey = config.string("api_key", null);
+        String keyEnv = config.string("api_key_env", null);
+        if (apiKey == null && keyEnv != null) {
+            apiKey = env.apply(keyEnv); // 都没配时 SDK 自己读 ANTHROPIC_API_KEY
         }
+        return new AnthropicModelGateway(model, new AnthropicModelGateway.Options(
+                apiKey,
+                config.string("base_url", null),
+                config.integer("max_tokens"),
+                config.integer("context_window"),
+                config.bool("thinking"),
+                config.string("thinking_display", null),
+                config.string("effort", null),
+                config.bool("fallbacks"),
+                config.bool("eager_input_streaming"),
+                config.bool("prompt_cache"),
+                config.integer("max_retries"),
+                config.seconds("timeout_seconds"),
+                config.map("extra_body")));
+    }
+
+    private ModelGateway openAiResponses(ModelSpec spec, Config config) {
+        ProviderPresets.Preset preset = ProviderPresets.PRESETS.get(spec.provider());
+        return new OpenAiResponsesModelGateway(spec.model(), new OpenAiResponsesModelGateway.Options(
+                spec.provider(),
+                config.string("base_url", preset != null ? preset.baseUrl() : null),
+                openAiKey(config, preset),
+                config.integer("max_tokens", RESPONSES_MAX_TOKENS),
+                config.integer("context_window", preset != null ? preset.contextWindow() : DEFAULT_CONTEXT_WINDOW),
+                config.string("reasoning_effort", config.string("effort", null)),
+                config.string("reasoning_summary", null),
+                config.has("store") && config.flag("store", false),
+                config.seconds("timeout_seconds"),
+                config.headers(),
+                config.map("extra_body")));
+    }
+
+    private ModelGateway openAiChat(ModelSpec spec, Config config) {
+        ProviderPresets.Preset preset = ProviderPresets.PRESETS.get(spec.provider());
+        return new OpenAiCompatibleModelGateway(spec.model(), new OpenAiCompatibleModelGateway.Options(
+                spec.provider(),
+                config.string("base_url", preset != null ? preset.baseUrl() : null),
+                openAiKey(config, preset),
+                config.integer("max_tokens", CHAT_MAX_TOKENS),
+                config.string("max_tokens_param", preset != null ? preset.maxTokensParam() : "max_tokens"),
+                config.integer("context_window", preset != null ? preset.contextWindow() : DEFAULT_CONTEXT_WINDOW),
+                config.string("reasoning_effort", null),
+                config.flag("echo_reasoning", preset == null || preset.echoReasoning()),
+                config.flag("stream_usage", true),
+                config.seconds("timeout_seconds"),
+                config.headers(),
+                config.map("extra_body")));
+    }
+
+    /** API Key 的查找顺序：api_key → api_key_env（或预设的环境变量名）指向的环境变量 → OPENAI_API_KEY。 */
+    private String openAiKey(Config config, ProviderPresets.Preset preset) {
+        String apiKey = config.string("api_key", preset != null ? preset.apiKey() : null);
+        String keyEnv = config.string("api_key_env", preset != null ? preset.apiKeyEnv() : null);
+        if (apiKey == null && keyEnv != null) {
+            apiKey = env.apply(keyEnv);
+        }
+        return apiKey != null ? apiKey : env.apply("OPENAI_API_KEY");
+    }
+
+    /** 一个 provider 的配置项（来自 YAML，值可能是字符串也可能是数字/布尔），按需要的类型取值。 */
+    private record Config(Map<String, Object> values) {
+
+        boolean has(String key) {
+            return values.get(key) != null;
+        }
+
+        /** 空白字符串也当作没配。 */
+        String string(String key, String fallback) {
+            Object value = values.get(key);
+            return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value);
+        }
+
+        Integer integer(String key) {
+            Object value = values.get(key);
+            return value == null ? null : Integer.valueOf(String.valueOf(value));
+        }
+
+        int integer(String key, int fallback) {
+            Object value = values.get(key);
+            return value == null ? fallback : Integer.parseInt(String.valueOf(value));
+        }
+
+        Boolean bool(String key) {
+            Object value = values.get(key);
+            return value == null ? null : Boolean.valueOf(String.valueOf(value));
+        }
+
+        /** 键存在就按它的值，否则用 fallback（注意：键存在但值为 null 时按 false 处理）。 */
+        boolean flag(String key, boolean fallback) {
+            return values.containsKey(key) ? Boolean.parseBoolean(String.valueOf(values.get(key))) : fallback;
+        }
+
+        Duration seconds(String key) {
+            Object value = values.get(key);
+            return value == null ? null : Duration.ofSeconds(Long.parseLong(String.valueOf(value)));
+        }
+
         @SuppressWarnings("unchecked")
-        Map<String, String> headers = cfg.get("headers") instanceof Map<?, ?> h ? (Map<String, String>) h : Map.of();
-        if (type.equals("openai-responses") || type.equals("responses")) {
-            return new OpenAiResponsesModelGateway(model, new OpenAiResponsesModelGateway.Options(
-                    provider,
-                    str(cfg.get("base_url"), p != null ? p.baseUrl() : null),
-                    key,
-                    intOr(cfg.get("max_tokens"), 32_000), // 推理模型的思考也算输出，留足空间
-                    intOr(cfg.get("context_window"), p != null ? p.contextWindow() : 128_000),
-                    str(cfg.get("reasoning_effort"), str(cfg.get("effort"), null)),
-                    str(cfg.get("reasoning_summary"), null),
-                    cfg.get("store") != null && Boolean.parseBoolean(String.valueOf(cfg.get("store"))),
-                    durationOrNull(cfg.get("timeout_seconds")),
-                    headers,
-                    mapOf(cfg.get("extra_body"))));
+        Map<String, Object> map(String key) {
+            return values.get(key) instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
         }
-        if (!type.equals("openai") && !type.equals("openai-chat")) {
-            throw new IllegalArgumentException("未知的 provider type: " + type + "（可选 anthropic / openai / openai-responses）");
+
+        @SuppressWarnings("unchecked")
+        Map<String, String> headers() {
+            return values.get("headers") instanceof Map<?, ?> map ? (Map<String, String>) map : Map.of();
         }
-        return new OpenAiCompatibleModelGateway(model, new OpenAiCompatibleModelGateway.Options(
-                provider,
-                str(cfg.get("base_url"), p != null ? p.baseUrl() : null),
-                key,
-                intOr(cfg.get("max_tokens"), 16_000),
-                str(cfg.get("max_tokens_param"), p != null ? p.maxTokensParam() : "max_tokens"),
-                intOr(cfg.get("context_window"), p != null ? p.contextWindow() : 128_000),
-                str(cfg.get("reasoning_effort"), null),
-                cfg.containsKey("echo_reasoning") ? Boolean.parseBoolean(String.valueOf(cfg.get("echo_reasoning")))
-                        : p == null || p.echoReasoning(),
-                !cfg.containsKey("stream_usage") || Boolean.parseBoolean(String.valueOf(cfg.get("stream_usage"))),
-                durationOrNull(cfg.get("timeout_seconds")),
-                headers,
-                mapOf(cfg.get("extra_body"))));
-    }
-
-    private static String str(Object v, String def) {
-        return v == null || String.valueOf(v).isBlank() ? def : String.valueOf(v);
-    }
-
-    private static Integer intOrNull(Object v) {
-        return v == null ? null : Integer.valueOf(String.valueOf(v));
-    }
-
-    private static int intOr(Object v, int def) {
-        return v == null ? def : Integer.parseInt(String.valueOf(v));
-    }
-
-    private static Boolean boolOrNull(Object v) {
-        return v == null ? null : Boolean.valueOf(String.valueOf(v));
-    }
-
-    private static Duration durationOrNull(Object v) {
-        return v == null ? null : Duration.ofSeconds(Long.parseLong(String.valueOf(v)));
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> mapOf(Object v) {
-        return v instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
     }
 }

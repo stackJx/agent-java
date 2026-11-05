@@ -6,6 +6,7 @@ import com.agentcore.domain.permission.model.Approval;
 import com.agentcore.domain.permission.model.Decision;
 import com.agentcore.domain.permission.model.PermissionRequest;
 import com.agentcore.domain.permission.service.PermissionPolicy;
+import com.agentcore.domain.permission.service.PermissionPolicy.Verdict;
 import com.agentcore.domain.tool.model.Tool;
 import com.agentcore.domain.tool.model.ToolOutput;
 import java.util.Map;
@@ -29,43 +30,51 @@ public final class PermissionInterceptor implements ToolInterceptor {
     }
 
     @Override
-    public ToolOutput intercept(ToolInvocation inv, Chain chain) {
-        Tool tool = inv.tool();
-        Map<String, Object> args = inv.arguments();
-        PermissionPolicy.Verdict verdict = policy.check(tool, args);
-        Decision decision = verdict.decision();
-        String reason = verdict.reason();
-        if (decision == Decision.ASK) {
-            if (approver == null) {
-                decision = Decision.DENY;
-                reason = "this action requires user approval, but no approver is available (non-interactive run)";
-            } else {
-                PermissionRequest req = new PermissionRequest(UUID.randomUUID().toString(), inv.context().conversationId(),
-                        tool.name(), args, tool.permissionSubject(args), tool.describe(args), reason);
-                Approval approval;
-                approvalLock.lock();
-                try {
-                    inv.context().cancel().throwIfCancelled();
-                    approval = approver.approve(req);
-                } finally {
-                    approvalLock.unlock();
-                }
-                // 用户选了"总是允许"：交给策略记住（默认实现会生成一条 allow 规则，本进程内后续同类调用不再询问）
-                if (approval.decision() == Decision.ALLOW && approval.remember()) {
-                    String remembered = policy.remember(tool, args);
-                    reason = remembered != null ? "always allowed (" + remembered + ")" : "approved by user";
-                } else if (approval.message() != null && !approval.message().isBlank()) {
-                    reason = approval.message();
-                } else {
-                    reason = approval.decision() == Decision.ALLOW ? "approved by user" : "denied by user";
-                }
-                decision = approval.decision() == Decision.ALLOW ? Decision.ALLOW : Decision.DENY;
-            }
-            inv.emit(new AgentEvent.PermissionDecided(inv.call().id(), tool.name(), decision.name().toLowerCase(), reason));
+    public ToolOutput intercept(ToolInvocation invocation, Chain chain) {
+        // 4. 策略判定：允许 / 拒绝 / 要问用户
+        Verdict verdict = policy.check(invocation.tool(), invocation.arguments());
+        // 5. 要问用户：问完只剩允许或拒绝两种结论
+        if (verdict.decision() == Decision.ASK) {
+            verdict = askUser(invocation, verdict.reason());
+            invocation.emit(new AgentEvent.PermissionDecided(invocation.call().id(), invocation.tool().name(),
+                    verdict.decision().name().toLowerCase(), verdict.reason()));
         }
-        if (decision == Decision.DENY) {
-            return ToolOutput.error("Permission denied: " + reason + ". Do not retry the same action; adjust your approach or ask the user.");
+        if (verdict.decision() == Decision.DENY) {
+            return ToolOutput.error("Permission denied: " + verdict.reason()
+                    + ". Do not retry the same action; adjust your approach or ask the user.");
         }
-        return chain.proceed(inv);
+        return chain.proceed(invocation);
+    }
+
+    private Verdict askUser(ToolInvocation invocation, String reason) {
+        if (approver == null) {
+            return Verdict.deny("this action requires user approval, but no approver is available (non-interactive run)");
+        }
+        Tool tool = invocation.tool();
+        Map<String, Object> args = invocation.arguments();
+        PermissionRequest request = new PermissionRequest(UUID.randomUUID().toString(), invocation.context().conversationId(),
+                tool.name(), args, tool.permissionSubject(args), tool.describe(args), reason);
+        Approval approval = approveOneAtATime(request, invocation);
+
+        boolean allowed = approval.decision() == Decision.ALLOW;
+        if (allowed && approval.remember()) {
+            // 用户选了"总是允许"：交给策略记住（默认实现会生成一条 allow 规则，本进程内后续同类调用不再询问）
+            String rule = policy.remember(tool, args);
+            return Verdict.allow(rule != null ? "always allowed (" + rule + ")" : "approved by user");
+        }
+        String message = approval.message() != null && !approval.message().isBlank()
+                ? approval.message()
+                : allowed ? "approved by user" : "denied by user";
+        return allowed ? Verdict.allow(message) : Verdict.deny(message);
+    }
+
+    private Approval approveOneAtATime(PermissionRequest request, ToolInvocation invocation) {
+        approvalLock.lock();
+        try {
+            invocation.context().cancel().throwIfCancelled();
+            return approver.approve(request);
+        } finally {
+            approvalLock.unlock();
+        }
     }
 }

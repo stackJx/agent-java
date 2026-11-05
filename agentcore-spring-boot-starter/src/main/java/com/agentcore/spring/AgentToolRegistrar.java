@@ -35,9 +35,9 @@ public class AgentToolRegistrar implements SmartInitializingSingleton, Applicati
         if (registry == null) {
             return;
         }
-        ConfigurableListableBeanFactory bf = context instanceof ConfigurableApplicationContext cac ? cac.getBeanFactory() : null;
+        ConfigurableListableBeanFactory beanFactory = context instanceof ConfigurableApplicationContext configurable ? configurable.getBeanFactory() : null;
         for (String name : context.getBeanDefinitionNames()) {
-            if (bf != null && bf.containsBeanDefinition(name) && !bf.getBeanDefinition(name).isSingleton()) {
+            if (beanFactory != null && beanFactory.containsBeanDefinition(name) && !beanFactory.getBeanDefinition(name).isSingleton()) {
                 continue;
             }
             Class<?> type = context.getType(name, false);
@@ -49,9 +49,9 @@ public class AgentToolRegistrar implements SmartInitializingSingleton, Applicati
                 continue; // 由 ToolRegistry Bean 按 subagent-max-depth / tools 白名单决定是否注册
             }
             if (Tool.class.isAssignableFrom(type)) {
-                Tool t = (Tool) context.getBean(name);
-                if (!registry.contains(t.name())) {
-                    registry.register(t);
+                Tool tool = (Tool) context.getBean(name);
+                if (!registry.contains(tool.name())) {
+                    registry.register(tool);
                 }
             } else if (AnnotatedTools.hasTools(userType)) {
                 registry.registerAll(AnnotatedTools.from(context.getBean(name), userType));

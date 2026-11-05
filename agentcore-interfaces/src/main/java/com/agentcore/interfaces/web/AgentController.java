@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
@@ -74,31 +75,32 @@ public class AgentController {
 
     @GetMapping("/conversations")
     public ResponseEntity<String> list(@RequestParam(defaultValue = "50") int limit) {
-        ArrayNode arr = Json.array();
-        for (ConversationSummary s : service.list(limit)) {
-            arr.addObject().put("id", s.id().value()).put("title", s.title()).put("messages", s.messageCount())
-                    .put("updated_at", String.valueOf(s.updatedAt())).set("usage", DomainCodec.usage(s.usage()));
+        ArrayNode conversations = Json.array();
+        for (ConversationSummary summary : service.list(limit)) {
+            conversations.addObject().put("id", summary.id().value()).put("title", summary.title())
+                    .put("messages", summary.messageCount()).put("updated_at", String.valueOf(summary.updatedAt()))
+                    .set("usage", DomainCodec.usage(summary.usage()));
         }
-        return json(HttpStatus.OK, Json.object().set("conversations", arr));
+        return json(HttpStatus.OK, Json.object().set("conversations", conversations));
     }
 
     @PostMapping("/conversations")
     public ResponseEntity<String> create(@RequestBody(required = false) String body) {
-        Map<String, String> meta = new java.util.LinkedHashMap<>();
-        meta.put("source", "web");
-        Json.toMap(parse(body).path("metadata")).forEach((k, v) -> meta.put(k, String.valueOf(v)));
-        Conversation c = service.startConversation(meta);
-        return json(HttpStatus.CREATED, Json.object().put("id", c.id().value()));
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("source", "web");
+        Json.toMap(parse(body).path("metadata")).forEach((key, value) -> metadata.put(key, String.valueOf(value)));
+        Conversation conversation = service.startConversation(metadata);
+        return json(HttpStatus.CREATED, Json.object().put("id", conversation.id().value()));
     }
 
     @GetMapping("/conversations/{id}")
     public ResponseEntity<String> get(@PathVariable String id) {
-        Conversation c = service.find(id).orElseThrow(() -> new IllegalArgumentException("conversation not found: " + id));
-        ObjectNode n = Json.object().put("id", id).put("title", c.title()).put("running", service.isRunning(id));
-        ArrayNode msgs = n.putArray("messages");
-        c.messages().forEach(m -> msgs.add(DomainCodec.message(m)));
-        n.set("usage", DomainCodec.usage(c.usage()));
-        return json(HttpStatus.OK, n);
+        Conversation conversation = service.find(id).orElseThrow(() -> new IllegalArgumentException("conversation not found: " + id));
+        ObjectNode detail = Json.object().put("id", id).put("title", conversation.title()).put("running", service.isRunning(id));
+        ArrayNode messages = detail.putArray("messages");
+        conversation.messages().forEach(message -> messages.add(DomainCodec.message(message)));
+        detail.set("usage", DomainCodec.usage(conversation.usage()));
+        return json(HttpStatus.OK, detail);
     }
 
     /**
@@ -107,42 +109,47 @@ public class AgentController {
      */
     @PostMapping(path = "/conversations/{id}/messages", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter send(@PathVariable String id, @RequestBody String body) {
-        JsonNode req = parse(body);
-        List<ContentBlock> input = new ArrayList<>();
-        String text = req.path("text").asText("");
-        if (!text.isBlank()) {
-            input.add(new TextBlock(text));
-        }
-        req.path("images").forEach(img -> input.add(img.hasNonNull("url") ? ImageBlock.url(img.get("url").asText())
-                : ImageBlock.base64(img.path("media_type").asText("image/png"), img.path("data").asText())));
-        if (input.isEmpty()) {
-            throw new IllegalArgumentException("text or images required");
-        }
+        List<ContentBlock> input = userInput(parse(body));
         if (service.find(id).isEmpty()) {
             throw new IllegalArgumentException("conversation not found: " + id);
         }
         SseEmitter emitter = new SseEmitter(sseTimeoutMillis);
         // 运行期间，这个会话的审批请求都推给当前这条 SSE 连接
         if (approver != null) {
-            approver.attach(id, (PermissionRequest pr) -> send(emitter, id, "approval_required", approvalRequired(pr)));
+            approver.attach(id, (PermissionRequest request) -> send(emitter, id, "approval_required", approvalRequired(request)));
         }
         AgentService.RunHandle handle = service.chatAsync(id, input,
-                (AgentEvent e) -> send(emitter, id, e.type(), EventCodec.encode(e)));
+                (AgentEvent event) -> send(emitter, id, event.type(), EventCodec.encode(event)));
         Runnable cancelIfRunning = () -> service.cancel(id);
         emitter.onTimeout(cancelIfRunning);
-        emitter.onError(t -> cancelIfRunning.run());
-        handle.result().whenComplete((r, t) -> {
+        emitter.onError(error -> cancelIfRunning.run());
+        handle.result().whenComplete((result, failure) -> {
             if (approver != null) {
                 approver.detach(id);
             }
-            if (t != null) {
-                send(emitter, id, "error", Json.object().put("error", String.valueOf(t)));
-            } else if (r.error() != null) {
-                send(emitter, id, "error", Json.object().put("error", r.error()));
+            if (failure != null) {
+                send(emitter, id, "error", Json.object().put("error", String.valueOf(failure)));
+            } else if (result.error() != null) {
+                send(emitter, id, "error", Json.object().put("error", result.error()));
             }
             emitter.complete();
         });
         return emitter;
+    }
+
+    /** {"text": "...", "images": [{"url": "..."} 或 {"media_type": "...", "data": "<base64>"}]}，至少要有一样。 */
+    private static List<ContentBlock> userInput(JsonNode request) {
+        List<ContentBlock> input = new ArrayList<>();
+        String text = request.path("text").asText("");
+        if (!text.isBlank()) {
+            input.add(new TextBlock(text));
+        }
+        request.path("images").forEach(image -> input.add(image.hasNonNull("url") ? ImageBlock.url(image.get("url").asText())
+                : ImageBlock.base64(image.path("media_type").asText("image/png"), image.path("data").asText())));
+        if (input.isEmpty()) {
+            throw new IllegalArgumentException("text or images required");
+        }
+        return input;
     }
 
     @PostMapping("/conversations/{id}/cancel")
@@ -157,17 +164,18 @@ public class AgentController {
 
     @GetMapping("/approvals")
     public ResponseEntity<String> pendingApprovals(@RequestParam(required = false) String conversationId) {
-        ArrayNode arr = Json.array();
+        ArrayNode approvals = Json.array();
         if (approver != null) {
-            approver.pending(conversationId).forEach(r -> arr.add(approvalRequired(r).put("conversation_id", r.conversationId())));
+            approver.pending(conversationId)
+                    .forEach(request -> approvals.add(approvalRequired(request).put("conversation_id", request.conversationId())));
         }
-        return json(HttpStatus.OK, Json.object().set("approvals", arr));
+        return json(HttpStatus.OK, Json.object().set("approvals", approvals));
     }
 
     @PostMapping("/approvals/{requestId}")
     public ResponseEntity<String> approve(@PathVariable String requestId, @RequestBody(required = false) String body) {
-        boolean ok = approver != null && approver.resolve(requestId, approval(parse(body)));
-        return json(ok ? HttpStatus.OK : HttpStatus.NOT_FOUND, Json.object().put("resolved", ok));
+        boolean resolved = approver != null && approver.resolve(requestId, approval(parse(body)));
+        return json(resolved ? HttpStatus.OK : HttpStatus.NOT_FOUND, Json.object().put("resolved", resolved));
     }
 
     // ------------------------------------------------------------------ 错误处理
@@ -194,10 +202,10 @@ public class AgentController {
     }
 
     /** 审批请求 → SSE 事件 approval_required 的数据（也用于等待中审批的列表）。 */
-    static ObjectNode approvalRequired(PermissionRequest req) {
-        ObjectNode data = Json.object().put("request_id", req.requestId()).put("tool", req.tool())
-                .put("summary", req.summary()).put("subject", req.subject()).put("reason", req.reason());
-        data.set("arguments", Json.tree(req.arguments()));
+    static ObjectNode approvalRequired(PermissionRequest request) {
+        ObjectNode data = Json.object().put("request_id", request.requestId()).put("tool", request.tool())
+                .put("summary", request.summary()).put("subject", request.subject()).put("reason", request.reason());
+        data.set("arguments", Json.tree(request.arguments()));
         return data;
     }
 

@@ -28,72 +28,74 @@ public final class OpenAiResponsesWire {
     }
 
     public static ArrayNode toInput(List<Message> messages) {
-        ArrayNode out = Json.array();
-        for (Message m : messages) {
-            if (m.role() == Role.ASSISTANT) {
-                if (m.providerPayload() != null && PROVIDER.equals(m.providerPayload().provider())) {
-                    Json.read(m.providerPayload().rawContentJson()).forEach(out::add); // 原样回放
+        ArrayNode input = Json.array();
+        for (Message message : messages) {
+            if (message.role() == Role.ASSISTANT) {
+                if (message.providerPayload() != null && PROVIDER.equals(message.providerPayload().provider())) {
+                    Json.read(message.providerPayload().rawContentJson()).forEach(input::add); // 原样回放
                 } else {
-                    assistant(m, out);
+                    addAssistant(message, input);
                 }
-                continue;
-            }
-            ArrayNode parts = Json.array();
-            for (ContentBlock b : m.content()) {
-                switch (b) {
-                    case ToolResult r -> out.add(toolOutput(r));
-                    case TextBlock t when !t.text().isEmpty() -> parts.add(Json.object().put("type", "input_text").put("text", t.text()));
-                    case ImageBlock i -> parts.add(image(i));
-                    default -> { }
-                }
-            }
-            if (!parts.isEmpty()) {
-                out.addObject().put("type", "message").put("role", "user").set("content", parts);
+            } else {
+                addUser(message, input);
             }
         }
-        return out;
+        return input;
     }
 
     /** 其他厂商（或手工构造）的助手消息：文本 + 函数调用；没有签名的思考内容不发。 */
-    private static void assistant(Message m, ArrayNode out) {
-        String text = m.text();
+    private static void addAssistant(Message message, ArrayNode input) {
+        String text = message.text();
         if (!text.isEmpty()) {
-            out.addObject().put("type", "message").put("role", "assistant").put("content", text);
+            input.addObject().put("type", "message").put("role", "assistant").put("content", text);
         }
-        for (ToolCall c : m.toolCalls()) {
-            out.addObject().put("type", "function_call").put("call_id", c.id()).put("name", c.name())
-                    .put("arguments", c.rawArguments() != null ? c.rawArguments() : Json.write(c.arguments()));
+        for (ToolCall call : message.toolCalls()) {
+            input.addObject().put("type", "function_call").put("call_id", call.id()).put("name", call.name())
+                    .put("arguments", call.rawArguments() != null ? call.rawArguments() : Json.write(call.arguments()));
         }
     }
 
-    static ObjectNode toolOutput(ToolResult r) {
-        String text = r.text().isEmpty() ? (r.isError() ? "(error)" : "(no output)") : r.text();
-        if (r.isError() && !text.toLowerCase().startsWith("error")) {
-            text = "Error: " + text;
+    /** 用户消息：工具结果各自成为 function_call_output 条目；文字和图片合成一条 message 条目。 */
+    private static void addUser(Message message, ArrayNode input) {
+        ArrayNode parts = Json.array();
+        for (ContentBlock block : message.content()) {
+            switch (block) {
+                case ToolResult result -> input.add(toolOutput(result));
+                case TextBlock text when !text.text().isEmpty() -> parts.add(Json.object().put("type", "input_text").put("text", text.text()));
+                case ImageBlock image -> parts.add(image(image));
+                default -> { }
+            }
         }
-        ObjectNode n = Json.object().put("type", "function_call_output").put("call_id", r.toolCallId());
-        if (r.images().isEmpty()) {
-            n.put("output", text);
+        if (!parts.isEmpty()) {
+            input.addObject().put("type", "message").put("role", "user").set("content", parts);
+        }
+    }
+
+    static ObjectNode toolOutput(ToolResult result) {
+        String text = OpenAiWire.toolResultText(result);
+        ObjectNode item = Json.object().put("type", "function_call_output").put("call_id", result.toolCallId());
+        if (result.images().isEmpty()) {
+            item.put("output", text);
         } else {
-            ArrayNode parts = n.putArray("output"); // Responses 的工具结果可以直接带图片
+            ArrayNode parts = item.putArray("output"); // Responses 的工具结果可以直接带图片
             parts.addObject().put("type", "input_text").put("text", text);
-            r.images().forEach(i -> parts.add(image(i)));
+            result.images().forEach(image -> parts.add(image(image)));
         }
-        return n;
+        return item;
     }
 
-    static ObjectNode image(ImageBlock i) {
-        String url = i.url() != null ? i.url() : "data:" + i.mediaType() + ";base64," + i.data();
+    static ObjectNode image(ImageBlock image) {
+        String url = image.url() != null ? image.url() : "data:" + image.mediaType() + ";base64," + image.data();
         return Json.object().put("type", "input_image").put("image_url", url).put("detail", "auto");
     }
 
     /** Responses 的函数工具是扁平结构：{type, name, description, parameters}。 */
     public static ArrayNode tools(List<ToolSpec> specs) {
-        ArrayNode out = Json.array();
-        for (ToolSpec t : specs) {
-            ObjectNode fn = out.addObject().put("type", "function").put("name", t.name()).put("description", t.description());
-            fn.set("parameters", Json.tree(t.inputSchema()));
+        ArrayNode tools = Json.array();
+        for (ToolSpec spec : specs) {
+            ObjectNode tool = tools.addObject().put("type", "function").put("name", spec.name()).put("description", spec.description());
+            tool.set("parameters", Json.tree(spec.inputSchema()));
         }
-        return out;
+        return tools;
     }
 }

@@ -213,7 +213,7 @@ sequenceDiagram
     Main->>UI: chat：ChatRepl 读键盘；run：跑一次就退出；serve：Tomcat 提供 HTTP 接口
 ```
 
-对应代码：`agentcore-bootstrap/src/main/java/com/agentcore/bootstrap/AgentCoreApplication.java`、`agentcore-bootstrap/src/main/resources/agentcore-cli.yml`。
+对应代码：`agentcore-bootstrap/src/main/java/com/agentcore/bootstrap/` 下的 `AgentCoreApplication`（启动和各命令）、`CliArgs`（参数解析与翻译）、`OptionalDataSource`（没配数据库时跳过数据源），以及 `src/main/resources/` 下的 `agentcore-cli.yml`（配置导入顺序）和 `agentcore-template.yaml`（`init` 生成的模板）。
 
 ## 5. 一次请求穿过哪些类（概览）
 

@@ -29,23 +29,23 @@ public final class InteractionTools {
                         + "mark items completed as soon as they are done.")
                 .schema(Schemas.object().array("todos", item, "The full, updated todo list.", true).build())
                 .permission(PermissionLevel.ALLOW)
-                .handler((a, ctx) -> {
+                .handler((args, ctx) -> {
                     List<Map<String, Object>> todos = new ArrayList<>();
-                    for (Object o : (List<?>) a.get("todos")) {
-                        todos.add(new LinkedHashMap<>((Map<String, Object>) o));
+                    for (Object todo : (List<?>) args.get("todos")) {
+                        todos.add(new LinkedHashMap<>((Map<String, Object>) todo));
                     }
                     ctx.state().put("todos", todos);
-                    long done = todos.stream().filter(t -> "completed".equals(t.get("status"))).count();
-                    StringBuilder sb = new StringBuilder("Todo list updated (" + done + "/" + todos.size() + " done):");
-                    for (Map<String, Object> t : todos) {
-                        String mark = switch (String.valueOf(t.get("status"))) {
+                    long done = todos.stream().filter(todo -> "completed".equals(todo.get("status"))).count();
+                    StringBuilder summary = new StringBuilder("Todo list updated (" + done + "/" + todos.size() + " done):");
+                    for (Map<String, Object> todo : todos) {
+                        String mark = switch (String.valueOf(todo.get("status"))) {
                             case "completed" -> "[x]";
                             case "in_progress" -> "[~]";
                             default -> "[ ]";
                         };
-                        sb.append('\n').append(mark).append(' ').append(t.get("content"));
+                        summary.append('\n').append(mark).append(' ').append(todo.get("content"));
                     }
-                    return ToolOutput.text(sb.toString(), Map.of("todos", todos));
+                    return ToolOutput.text(summary.toString(), Map.of("todos", todos));
                 }).build();
     }
 
@@ -58,13 +58,13 @@ public final class InteractionTools {
                         .build())
                 .permission(PermissionLevel.ALLOW)
                 .timeout(null)
-                .handler((a, ctx) -> {
+                .handler((args, ctx) -> {
                     UserPrompter prompter = ctx.service(UserPrompter.class);
                     if (prompter == null) {
                         throw new ToolException("No interactive user is available. Make a reasonable assumption, state it, and continue.");
                     }
-                    List<String> options = a.get("options") instanceof List<?> l ? l.stream().map(String::valueOf).toList() : List.of();
-                    return ToolOutput.text("User answered: " + prompter.ask((String) a.get("question"), options));
+                    List<String> options = args.get("options") instanceof List<?> list ? list.stream().map(String::valueOf).toList() : List.of();
+                    return ToolOutput.text("User answered: " + prompter.ask((String) args.get("question"), options));
                 }).build();
     }
 }

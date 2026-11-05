@@ -45,16 +45,16 @@ public final class AsyncApprover implements Approver {
     }
 
     @Override
-    public Approval approve(PermissionRequest req) {
-        Channel channel = channels.get(req.conversationId());
+    public Approval approve(PermissionRequest request) {
+        Channel channel = channels.get(request.conversationId());
         if (channel == null) {
             return Approval.deny("no client is connected to approve this action");
         }
-        CompletableFuture<Approval> f = new CompletableFuture<>();
-        pending.put(req.requestId(), new PendingApproval(req, f));
+        CompletableFuture<Approval> answer = new CompletableFuture<>();
+        pending.put(request.requestId(), new PendingApproval(request, answer));
         try {
-            channel.requestApproval(req);
-            return f.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            channel.requestApproval(request);
+            return answer.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             return Approval.deny("approval timed out after " + timeout.toSeconds() + "s");
         } catch (InterruptedException e) {
@@ -63,19 +63,19 @@ public final class AsyncApprover implements Approver {
         } catch (Exception e) {
             return Approval.deny(String.valueOf(e.getMessage()));
         } finally {
-            pending.remove(req.requestId());
+            pending.remove(request.requestId());
         }
     }
 
     /** 前端回传审批结果；requestId 不存在（已超时或已处理）时返回 false。 */
     public boolean resolve(String requestId, Approval approval) {
-        PendingApproval p = pending.get(requestId);
-        return p != null && p.future().complete(approval);
+        PendingApproval waiting = pending.get(requestId);
+        return waiting != null && waiting.future().complete(approval);
     }
 
     /** 当前等待中的审批（便于轮询式前端展示）。 */
     public List<PermissionRequest> pending(String conversationId) {
         return pending.values().stream().map(PendingApproval::request)
-                .filter(r -> conversationId == null || r.conversationId().equals(conversationId)).toList();
+                .filter(request -> conversationId == null || request.conversationId().equals(conversationId)).toList();
     }
 }

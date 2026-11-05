@@ -61,14 +61,14 @@ public final class ToolRegistry implements Iterable<Tool> {
     /** 按名称通配符筛选出新注册表（子 Agent 用）。include 为 null 表示全部。 */
     public synchronized ToolRegistry filtered(List<String> include, List<String> exclude) {
         ToolRegistry out = new ToolRegistry();
-        for (Tool t : tools.values()) {
-            if (include != null && include.stream().noneMatch(p -> GlobPattern.matches(p, t.name()))) {
+        for (Tool tool : tools.values()) {
+            if (include != null && include.stream().noneMatch(pattern -> GlobPattern.matches(pattern, tool.name()))) {
                 continue;
             }
-            if (exclude != null && exclude.stream().anyMatch(p -> GlobPattern.matches(p, t.name()))) {
+            if (exclude != null && exclude.stream().anyMatch(pattern -> GlobPattern.matches(pattern, tool.name()))) {
                 continue;
             }
-            out.register(t);
+            out.register(tool);
         }
         return out;
     }

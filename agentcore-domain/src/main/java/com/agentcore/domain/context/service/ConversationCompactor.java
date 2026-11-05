@@ -108,14 +108,14 @@ public final class ConversationCompactor {
 
     /** 渲染成纯文本记录（摘要请求用），最近 3 条消息保留更多工具输出。 */
     public static String renderTranscript(List<Message> messages, int resultChars, int recentResultChars) {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder transcript = new StringBuilder();
         int n = messages.size();
         for (int i = 0; i < n; i++) {
-            Message m = messages.get(i);
+            Message message = messages.get(i);
             int limit = i >= n - 3 ? recentResultChars : resultChars;
-            String role = m.role().wire();
-            for (ContentBlock b : m.content()) {
-                String line = switch (b) {
+            String role = message.role().wire();
+            for (ContentBlock block : message.content()) {
+                String line = switch (block) {
                     case TextBlock t when !t.text().isBlank() -> "[" + role + "]: " + t.text();
                     case ToolCall c -> "[assistant → tool " + c.name() + "]: "
                             + clip(c.rawArguments() != null ? c.rawArguments() : String.valueOf(c.arguments()), limit);
@@ -125,14 +125,14 @@ public final class ConversationCompactor {
                     default -> null;
                 };
                 if (line != null) {
-                    if (!sb.isEmpty()) {
-                        sb.append("\n\n");
+                    if (!transcript.isEmpty()) {
+                        transcript.append("\n\n");
                     }
-                    sb.append(line);
+                    transcript.append(line);
                 }
             }
         }
-        return sb.toString();
+        return transcript.toString();
     }
 
     private static String clip(String s, int limit) {

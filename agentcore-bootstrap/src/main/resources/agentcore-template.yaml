@@ -1,0 +1,69 @@
+# agentcore 配置，格式与 Spring Boot 的 application.yml 相同。
+# 读取顺序（后者覆盖前者）：~/.agentcore/config.yaml → ./.agentcore/config.yaml → ./agentcore.yaml → --config 指定的文件。
+# 可以用 ${ENV_VAR} 或 ${ENV_VAR:默认值} 引用环境变量。
+agentcore:
+  model: deepseek:deepseek-v4-pro          # 或 anthropic:claude-opus-5-5 / openai:gpt-6-astra / qwen:qwen-max / mock
+
+  providers:
+    deepseek:
+      api-key-env: DEEPSEEK_API_KEY
+      # reasoning-effort: high
+    anthropic:
+      effort: high                         # low / medium / high / xhigh / max
+    # openai:                              # openai:<模型> 默认走 Responses API（/responses）
+    #   reasoning-effort: medium
+    #   reasoning-summary: auto            # 显示思考摘要（部分组织需先完成验证）
+    # 自定义 OpenAI 兼容服务：model 写成 myvllm:<模型名>
+    # type 可选 openai（Chat Completions）或 openai-responses（Responses）
+    # myvllm:
+    #   type: openai
+    #   base-url: http://localhost:8000/v1
+    #   api-key: EMPTY
+    #   context-window: 131072
+
+  agent:
+    name: agentcore
+    max-turns: 100
+    instructions: |
+      （可选）对 Agent 的额外要求，例如：回答使用简体中文。
+
+  # tools: [read_file, write_file, edit_file, glob, grep, bash, web_fetch, todo_write, ask_user, task]
+
+  permissions:
+    mode: default                          # default / auto（全部放行）/ readonly
+    allow: ["bash(git status*)", "bash(git diff*)", "bash(ls *)"]
+    deny: ["bash(rm -rf *)", "bash(sudo *)"]
+
+  # mcp-servers:
+  #   filesystem:
+  #     command: npx
+  #     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+  subagents:
+    researcher:
+      description: 只读调研：搜索代码/网页并给出结论
+      tools: [read_file, glob, grep, web_fetch]
+      # model: deepseek:deepseek-flash     # 子 Agent 可以用更便宜的模型
+
+  context:
+    threshold: 0.75                        # 估算 token 超过窗口的 75% 时自动压缩
+
+  # 会话与长期记忆存数据库（默认存 ~/.agentcore 下的文件），同时配置下面的 spring.datasource。
+  # JDBC 驱动放到 AGENTCORE_CLASSPATH 里，例如 AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar
+  # persistence:
+  #   jdbc:
+  #     enabled: true
+  #     initialize-schema: create-if-missing   # never：由 DBA 执行建表脚本
+
+  # web:
+  #   token: ${AGENTCORE_TOKEN}          # 设置后接口需要 Authorization: Bearer <token>（health 除外）
+
+# spring:
+#   datasource:
+#     url: jdbc:mysql://localhost:3306/agent?useUnicode=true&characterEncoding=utf8
+#     username: agent
+#     password: ${DB_PASSWORD}
+
+server:
+  port: 8080
+  # address: 0.0.0.0                       # 默认只监听本机

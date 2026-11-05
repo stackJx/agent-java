@@ -19,6 +19,8 @@ import java.util.function.Consumer;
 /** stdio 传输：本地子进程，按行收发 JSON-RPC。 */
 public final class StdioTransport implements McpTransport {
 
+    private static final int MAX_STDERR_LINES = 30;
+
     private final List<String> command;
     private final Map<String, String> env;
     private final Path cwd;
@@ -38,53 +40,59 @@ public final class StdioTransport implements McpTransport {
 
     @Override
     public void start(Consumer<JsonNode> onMessage, Runnable onClose) throws IOException {
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.environment().putAll(env);
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.environment().putAll(env);
         if (cwd != null) {
-            pb.directory(cwd.toFile());
+            builder.directory(cwd.toFile());
         }
-        process = pb.start();
+        process = builder.start();
         stdin = process.getOutputStream();
-        Thread.ofVirtual().name("mcp-stdout").start(() -> {
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    if (line.isBlank()) {
-                        continue;
-                    }
-                    JsonNode msg;
-                    try {
-                        msg = Json.read(line);
-                    } catch (RuntimeException e) {
-                        continue; // 非 JSON 行（某些服务器会往 stdout 打日志）
-                    }
-                    if (msg.isArray()) {
-                        msg.forEach(onMessage);
-                    } else {
-                        onMessage.accept(msg);
+        Thread.ofVirtual().name("mcp-stdout").start(() -> readMessages(onMessage, onClose));
+        Thread.ofVirtual().name("mcp-stderr").start(this::collectStderr);
+    }
+
+    /** stdout 每行一条 JSON-RPC 消息（也可能是一批）；进程退出时通知客户端连接已断开。 */
+    private void readMessages(Consumer<JsonNode> onMessage, Runnable onClose) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                JsonNode message;
+                try {
+                    message = Json.read(line);
+                } catch (RuntimeException notJson) {
+                    continue; // 非 JSON 行（某些服务器会往 stdout 打日志）
+                }
+                if (message.isArray()) {
+                    message.forEach(onMessage);
+                } else {
+                    onMessage.accept(message);
+                }
+            }
+        } catch (IOException ignored) {
+            // 进程退出
+        } finally {
+            onClose.run();
+        }
+    }
+
+    /** 只保留 stderr 的最后几行，出错时附在错误信息里帮助排查。 */
+    private void collectStderr() {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                synchronized (stderrTail) {
+                    stderrTail.addLast(line);
+                    if (stderrTail.size() > MAX_STDERR_LINES) {
+                        stderrTail.removeFirst();
                     }
                 }
-            } catch (IOException ignored) {
-                // 进程退出
-            } finally {
-                onClose.run();
             }
-        });
-        Thread.ofVirtual().name("mcp-stderr").start(() -> {
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    synchronized (stderrTail) {
-                        stderrTail.addLast(line);
-                        if (stderrTail.size() > 30) {
-                            stderrTail.removeFirst();
-                        }
-                    }
-                }
-            } catch (IOException ignored) {
-                // 进程退出
-            }
-        });
+        } catch (IOException ignored) {
+            // 进程退出
+        }
     }
 
     @Override

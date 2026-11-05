@@ -18,17 +18,18 @@ public final class ConsolePrompter implements UserPrompter {
         for (int i = 0; i < options.size(); i++) {
             io.err().println("  " + (i + 1) + ". " + options.get(i));
         }
-        String ans = io.readLine("> ");
-        if (ans == null || ans.isBlank()) {
+        String input = io.readLine("> ");
+        if (input == null || input.isBlank()) {
             return "(no answer)";
         }
-        String s = ans.strip();
-        if (s.matches("\\d+")) {
-            int idx = Integer.parseInt(s);
-            if (idx >= 1 && idx <= options.size()) {
-                return options.get(idx - 1);
+        String answer = input.strip();
+        // 输入序号就当作选了对应的选项
+        if (answer.matches("\\d+")) {
+            int choice = Integer.parseInt(answer);
+            if (choice >= 1 && choice <= options.size()) {
+                return options.get(choice - 1);
             }
         }
-        return s;
+        return answer;
     }
 }
