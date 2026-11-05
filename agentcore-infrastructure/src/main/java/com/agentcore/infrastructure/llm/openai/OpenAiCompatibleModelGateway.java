@@ -148,6 +148,8 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
             throw httpError(resp.statusCode(), body);
         }
 
+        // 流式响应是一串 "data: {chunk}" 行，每个 chunk 只带一点增量（delta）。
+        // 文字、思考直接拼接；工具调用按 index 分别累加（id、name 只在第一块出现，arguments 分多块到达）
         StringBuilder text = new StringBuilder();
         StringBuilder reasoning = new StringBuilder();
         Map<Integer, Acc> calls = new TreeMap<>();
@@ -155,6 +157,7 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
         TokenUsage usage = new TokenUsage(0, 0, 0, 0, 1);
         String modelName = model;
         InputStream in = resp.body();
+        // 取消时直接关闭输入流，阻塞中的 readLine 会立刻抛出 IOException
         Runnable unregister = cancel.onCancel(() -> {
             try {
                 in.close();
@@ -250,6 +253,7 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
             throw new ModelException("provider reported insufficient_system_resource", true);
         }
 
+        // 流读完了，拼出完整的助手消息：思考 → 文字 → 工具调用。参数解析失败不抛异常，记在 parseError 里交给引擎回报给模型
         List<ContentBlock> content = new ArrayList<>();
         if (!reasoning.isEmpty()) {
             content.add(ThinkingBlock.of(reasoning.toString(), OpenAiWire.PROVIDER));

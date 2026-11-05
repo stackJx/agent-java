@@ -148,6 +148,12 @@ public final class AgentHttpServer implements AutoCloseable {
         }
     }
 
+    /**
+     * 发消息并把整个运行过程变成一个 SSE 事件流：
+     * ① 解析输入 → ② 回复 SSE 响应头，连接保持打开 → ③ 登记审批通道（审批请求作为 approval_required 事件推给这个连接）
+     * → ④ 在虚拟线程上运行，每个 AgentEvent 写成一帧 → ⑤ 运行结束后注销审批通道，关闭连接。
+     * 客户端中途断开时写入失败，任务会被取消。
+     */
     private void stream(HttpExchange ex, String id, JsonNode body) throws IOException {
         List<ContentBlock> input = new ArrayList<>();
         String text = body.path("text").asText("");
@@ -160,11 +166,13 @@ public final class AgentHttpServer implements AutoCloseable {
             json(ex, 400, Json.object().put("error", "text or images required"));
             return;
         }
+        // X-Accel-Buffering: no 让 Nginx 不缓冲，事件能实时到达浏览器
         ex.getResponseHeaders().add("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().add("Cache-Control", "no-cache");
         ex.getResponseHeaders().add("X-Accel-Buffering", "no");
         ex.sendResponseHeaders(200, 0);
         OutputStream out = ex.getResponseBody();
+        // 引擎事件和审批请求来自不同线程，写同一个连接时要加锁
         Sink sink = (event, data) -> {
             synchronized (out) {
                 try {
@@ -178,7 +186,7 @@ public final class AgentHttpServer implements AutoCloseable {
         approver.attach(id, req -> sink.send("approval_required", WebJson.approvalRequired(req)));
         try {
             AgentService.RunHandle handle = service.chatAsync(id, input, (AgentEvent e) -> sink.send(e.type(), EventCodec.encode(e)));
-            RunResult r = handle.result().join();
+            RunResult r = handle.result().join(); // 当前请求线程等到运行结束，期间事件由运行线程直接写出
             if (r.error() != null) {
                 sink.send("error", Json.object().put("error", r.error()));
             }

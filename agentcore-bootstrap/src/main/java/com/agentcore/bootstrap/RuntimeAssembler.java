@@ -82,12 +82,18 @@ public final class RuntimeAssembler {
     private RuntimeAssembler() {
     }
 
+    /**
+     * 组装顺序：① 模型 → ② 工具与系统提示词（内置 → 记忆 → 技能 → MCP → 宿主额外工具 → task）
+     * → ③ 会话仓储 → ④ 引擎与应用服务。需要关闭的资源（模型客户端、MCP 子进程）登记在 resources 里，
+     * 由 {@link AgentRuntime#close()} 倒序关闭。
+     */
     public static AgentRuntime assemble(Settings s, Options o) {
         Path cwd = o.cwd().toAbsolutePath().normalize();
         List<AutoCloseable> resources = new ArrayList<>();
         Map<String, String> warnings = new LinkedHashMap<>();
         ModelGatewayFactory factory = new ModelGatewayFactory(s.mapOfMaps("providers"));
 
+        // ---- ① 模型：宿主直接给的优先，否则按配置的 "provider:model" 创建
         ModelGateway model = o.model();
         if (model == null) {
             String spec = s.string("model", null);
@@ -99,7 +105,7 @@ public final class RuntimeAssembler {
         }
         resources.add(model);
 
-        // ---- 工具
+        // ---- ② 工具与系统提示词。注册顺序就是发给模型的工具顺序，保持稳定有利于提示缓存
         ToolRegistry tools = new ToolRegistry();
         List<String> names = s.strings("tools");
         tools.registerAll(BuiltinTools.select(names));
@@ -110,6 +116,7 @@ public final class RuntimeAssembler {
                 .instructions(s.string("agent.instructions", ""))
                 .projectInstructions(s.bool("project_instructions", true));
 
+        // 配置了 persistence.jdbc.url 时，记忆和会话都改存数据库
         JdbcStore jdbc = jdbcStore(s);
         MemoryRepository memory = null;
         if (s.bool("memory.enabled", true)) {
@@ -137,6 +144,7 @@ public final class RuntimeAssembler {
         if (o.extraTools() != null) {
             tools.registerAll(o.extraTools());
         }
+        // task（子 Agent）工具需要引用最终建好的引擎，所以先注册，引擎建好后再 attach
         int maxDepth = s.integer("subagent_max_depth", 1);
         TaskTool task = null;
         if (maxDepth > 0 && (names == null || names.contains("task"))) {
@@ -149,13 +157,13 @@ public final class RuntimeAssembler {
             tools.register(task);
         }
 
-        // ---- 会话仓储
+        // ---- ③ 会话仓储：数据库 > JSONL 文件（默认）> 内存（sessions.enabled: false）
         ConversationRepository repo = jdbc != null ? new JdbcConversationRepository(jdbc)
                 : s.bool("sessions.enabled", true)
                 ? new JsonlConversationRepository(resolve(cwd, s.string("sessions.dir", Settings.home(System::getenv) + "/sessions")))
                 : new InMemoryConversationRepository();
 
-        // ---- 引擎
+        // ---- ④ 引擎与应用服务。系统提示词在这里 build() 一次，之后整个会话期间不变
         EngineSettings es = new EngineSettings(cwd, s.integer("agent.max_turns", 100), 8, 3, Duration.ofSeconds(2), 2, maxDepth);
         CompactionSettings cs = new CompactionSettings(s.decimal("context.threshold", 0.75), s.integer("context.max_tokens", 0),
                 8000, 120_000);

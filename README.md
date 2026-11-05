@@ -12,6 +12,8 @@
 - **接口**：交互式 REPL、一次性执行、HTTP + SSE 服务（含 Web 审批流程）。
 - **Spring Boot 4 Starter**：引入依赖 + 写 `application.yml` 即可；业务工具就是带 `@AgentTool` 的 Spring Bean，钩子、审批、仓储都能用 Bean 替换。
 
+> **第一次看这个项目？** 先读 [docs/](docs/README.md)：7 篇带图的设计文档（架构、Agent 主循环、会话聚合、工具与权限、模型适配、存储、接入扩展），附阅读路线和术语表。每个包里的 `package-info.java` 说明了这个包负责什么、先读哪个类。
+
 ---
 
 ## 快速开始

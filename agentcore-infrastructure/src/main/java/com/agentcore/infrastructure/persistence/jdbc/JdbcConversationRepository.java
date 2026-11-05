@@ -52,6 +52,17 @@ public final class JdbcConversationRepository implements ConversationRepository 
 
     // ------------------------------------------------------------------ 写
 
+    /**
+     * 追加保存新事件（乐观并发控制）。
+     *
+     * <ol>
+     *   <li>取走聚合上的新事件；第一个是 ConversationStarted 说明是新会话，INSERT 摘要行；</li>
+     *   <li>否则 {@code UPDATE ... WHERE id = ? AND last_seq = 我上次看到的版本}：更新 0 行说明别的实例先写了，抛冲突；</li>
+     *   <li>事件按 seq = 版本+1、+2…… 批量插入。(conversation_id, seq) 是主键，万一两边都通过了第 2 步，
+     *       第二个插入也会因唯一约束失败，同样变成冲突；</li>
+     *   <li>以上在一个事务里完成。失败时丢弃内存缓存，下次 findById 从数据库重新加载。</li>
+     * </ol>
+     */
     @Override
     public void save(Conversation c) {
         List<DomainEvent> pending = c.pullEvents();
@@ -160,6 +171,7 @@ public final class JdbcConversationRepository implements ConversationRepository 
 
     // ------------------------------------------------------------------ 读
 
+    /** 先查数据库里的版本号：和缓存一致就用缓存；不一致（别的实例写过）或没缓存就读出全部事件重放。 */
     @Override
     public Optional<Conversation> findById(ConversationId id) {
         return store.query(conn -> {

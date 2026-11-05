@@ -38,6 +38,7 @@ public final class AgentService {
 
     private final AgentEngine engine;
     private final ConversationRepository repository;
+    /** 正在运行的会话 → 它的控制句柄。既用来保证"一个会话同时只有一个运行"，也用来转发取消和插话。 */
     private final Map<String, RunControl> running = new ConcurrentHashMap<>();
 
     public AgentService(AgentEngine engine, ConversationRepository repository) {
@@ -55,6 +56,7 @@ public final class AgentService {
 
     // ------------------------------------------------------------------ 命令
 
+    /** 新建会话。元数据在创建时一次写全（进入 ConversationStarted 事件），调用方传入的同名键优先。 */
     public Conversation startConversation(Map<String, String> metadata) {
         Map<String, String> meta = new java.util.LinkedHashMap<>();
         meta.put("model", engine.model().describe());
@@ -75,6 +77,7 @@ public final class AgentService {
 
     public RunResult chat(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener, RunControl control) {
         Conversation c = load(conversationId);
+        // 同一会话已有运行时直接拒绝而不是排队：两个运行同时往一段历史里写，必然破坏工具调用的一一对应
         if (running.putIfAbsent(conversationId, control) != null) {
             throw new IllegalStateException("conversation " + conversationId + " already has a running task");
         }
@@ -92,6 +95,7 @@ public final class AgentService {
         if (running.putIfAbsent(conversationId, control) != null) {
             throw new IllegalStateException("conversation " + conversationId + " already has a running task");
         }
+        // 每个运行一个虚拟线程：运行大部分时间在等模型和工具，虚拟线程几乎不占资源
         CompletableFuture<RunResult> future = new CompletableFuture<>();
         Thread.ofVirtual().name("agent-run-" + conversationId).start(() -> {
             try {

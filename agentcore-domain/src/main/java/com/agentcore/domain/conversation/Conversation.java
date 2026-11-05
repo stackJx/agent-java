@@ -29,6 +29,10 @@ import java.util.stream.Collectors;
  *       在此之前不能追加新的用户输入或助手回复 —— 这保证历史永远是各厂商 API 都接受的合法序列。</li>
  * </ol>
  * 所有状态变化都会产生领域事件，仓储据此做追加式持久化（事件即存储格式）。
+ *
+ * <p>每个修改方法的套路都一样：检查规则 → 构造事件 → {@link #record}（{@code apply} 改内存状态 + {@code raise} 等待保存）。
+ * 从存储读回时，{@link #replay} 对每个历史事件调用同一个 {@code apply}，所以"新产生"和"重放"得到的状态一定一致。
+ * 详见 docs/03-conversation.md。
  */
 public final class Conversation extends AggregateRoot<ConversationId> {
 
@@ -64,7 +68,7 @@ public final class Conversation extends AggregateRoot<ConversationId> {
         return start(ConversationId.newId(), Map.of());
     }
 
-    /** 由历史事件重建（仓储使用），不会产生新事件。 */
+    /** 由历史事件重建（仓储使用），不会产生新事件：只调用 apply，不调用 raise。 */
     public static Conversation replay(List<? extends DomainEvent> history) {
         if (history.isEmpty() || !(history.get(0) instanceof ConversationStarted started)) {
             throw new DomainException("event stream must begin with ConversationStarted");
@@ -76,6 +80,10 @@ public final class Conversation extends AggregateRoot<ConversationId> {
         return c;
     }
 
+    /**
+     * 把一个事件作用到内存状态上。这里是唯一修改状态的地方，新事件和重放的历史事件都走这里。
+     * 派生状态（用量、标题、上下文快照）也在这里算，不单独存储。
+     */
     private void apply(DomainEvent e) {
         switch (e) {
             case MessageAppended m -> {
@@ -86,12 +94,14 @@ public final class Conversation extends AggregateRoot<ConversationId> {
                 }
                 if (m.usage() != null) {
                     usage = usage.plus(m.usage());
+                    // 记下"这次请求的真实规模"，下次估算上下文时以它为基线，只估算之后新增的消息
                     if (!m.usage().isEmpty()) {
                         snapshot = new ContextSnapshot(messages.size(), m.usage().totalInput() + m.usage().outputTokens());
                     }
                 }
             }
             case ConversationCompacted cc -> {
+                // 压缩是唯一的整体替换；旧的快照不再适用
                 messages.clear();
                 messages.addAll(cc.messages());
                 compactions++;
@@ -104,6 +114,7 @@ public final class Conversation extends AggregateRoot<ConversationId> {
         updatedAt = e.occurredAt();
     }
 
+    /** 新产生的事件：先改状态，再放进待保存列表，等仓储 save 时用 pullEvents 取走。 */
     private void record(DomainEvent e) {
         apply(e);
         raise(e);
@@ -141,12 +152,14 @@ public final class Conversation extends AggregateRoot<ConversationId> {
         if (pending.isEmpty()) {
             throw new DomainException("there are no pending tool calls to answer");
         }
+        // 结果的 ID 集合必须和待回复调用的 ID 集合完全相同：不能少、不能多
         Map<String, ToolResult> byId = results.stream()
                 .collect(Collectors.toMap(ToolResult::toolCallId, Function.identity(), (a, b) -> a, LinkedHashMap::new));
         Set<String> expected = pending.stream().map(ToolCall::id).collect(Collectors.toSet());
         if (!byId.keySet().equals(expected)) {
             throw new DomainException("tool results " + byId.keySet() + " do not match pending tool calls " + expected);
         }
+        // 按调用顺序排列结果（并行执行的工具完成顺序不定），额外内容（插话）放在所有结果之后
         List<ContentBlock> content = new ArrayList<>();
         pending.forEach(c -> content.add(byId.get(c.id())));
         if (extra != null) {
@@ -198,6 +211,7 @@ public final class Conversation extends AggregateRoot<ConversationId> {
 
     // ------------------------------------------------------------------ 查询
 
+    /** 待回复的工具调用：最后一条是带工具调用的助手消息时就是它的调用，否则为空。非空时会话处于"等待工具结果"状态。 */
     public synchronized List<ToolCall> pendingToolCalls() {
         if (messages.isEmpty()) {
             return List.of();

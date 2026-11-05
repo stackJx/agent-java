@@ -154,6 +154,8 @@ public final class OpenAiResponsesModelGateway implements ModelGateway {
             throw OpenAiCompatibleModelGateway.httpError(resp.statusCode(), body);
         }
 
+        // Responses 的流由一系列带 type 的事件组成。增量事件只用于实时回调；
+        // 最终内容以 response.completed 里的完整 output 为准（个别兼容服务不带 output，就用逐个收到的 output_item.done）
         Map<Integer, JsonNode> doneItems = new TreeMap<>();
         JsonNode result = null;
         String lastTextItem = null;
@@ -236,6 +238,7 @@ public final class OpenAiResponsesModelGateway implements ModelGateway {
         return toResponse(result, output);
     }
 
+    /** output 条目 → 领域消息。原始 output 整体存进 ProviderPayload，下一轮原样回放。 */
     static ModelResponse toResponse(JsonNode result, ArrayNode output) {
         List<ContentBlock> content = new ArrayList<>();
         StringBuilder refusal = new StringBuilder();
