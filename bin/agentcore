@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# agentcore 启动脚本：首次运行时自动构建可执行 jar。
-# 额外的 jar（例如 JDBC 驱动）通过 AGENTCORE_CLASSPATH 追加，多个用冒号分隔：
-#   AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar bin/agentcore
+# agentcore 启动脚本（Spring Boot 可执行 jar）：首次运行时自动构建。
+# 额外的 jar（例如 JDBC 驱动）通过 AGENTCORE_CLASSPATH 追加，多个用冒号分隔，也可以写目录：
+#   AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar bin/agentcore serve
+# JVM 参数用 AGENTCORE_JAVA_OPTS，例如 AGENTCORE_JAVA_OPTS="-Xmx1g"。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JAR="$ROOT/agentcore-bootstrap/target/agentcore.jar"
@@ -9,4 +10,10 @@ if [[ ! -f "$JAR" ]]; then
   echo "首次运行，正在构建 $JAR ..." >&2
   (cd "$ROOT" && mvn -q -DskipTests install) >&2
 fi
-exec java ${AGENTCORE_JAVA_OPTS:-} -cp "$JAR${AGENTCORE_CLASSPATH:+:$AGENTCORE_CLASSPATH}" com.agentcore.bootstrap.AgentCoreApplication "$@"
+LOADER=()
+if [[ -n "${AGENTCORE_CLASSPATH:-}" ]]; then
+  # Spring Boot 的 PropertiesLauncher 用 loader.path 加载外部 jar，多个用逗号分隔
+  LOADER=("-Dloader.path=${AGENTCORE_CLASSPATH//:/,}")
+fi
+# shellcheck disable=SC2086
+exec java ${AGENTCORE_JAVA_OPTS:-} "${LOADER[@]}" -jar "$JAR" "$@"

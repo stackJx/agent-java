@@ -15,7 +15,7 @@ import java.util.concurrent.TimeoutException;
  * 异步审批（Web / IM 等非阻塞界面用）：需要审批时把请求推给该会话当前连接的前端通道，
  * 然后阻塞等待前端调用 {@link #resolve} 回传结果；超时或没有前端连接时拒绝。
  *
- * <p>与具体协议无关：JDK HttpServer、Spring MVC、WebSocket、钉钉/飞书卡片都可以作为通道。
+ * <p>与具体协议无关：SSE（{@code AgentController}）、WebSocket、钉钉/飞书卡片都可以作为通道。
  */
 public final class AsyncApprover implements Approver {
 

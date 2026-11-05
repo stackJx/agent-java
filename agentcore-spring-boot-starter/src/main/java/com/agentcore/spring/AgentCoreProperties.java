@@ -400,6 +400,8 @@ public class AgentCoreProperties {
         private Duration approvalTimeout = Duration.ofMinutes(5);
         /** SSE 连接超时；0 表示不超时。 */
         private Duration sseTimeout = Duration.ZERO;
+        /** 设置后，除 health 外的接口都要带 Authorization: Bearer &lt;token&gt;（已接入 Spring Security 的应用不需要）。 */
+        private String token;
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -409,6 +411,8 @@ public class AgentCoreProperties {
         public void setApprovalTimeout(Duration approvalTimeout) { this.approvalTimeout = approvalTimeout; }
         public Duration getSseTimeout() { return sseTimeout; }
         public void setSseTimeout(Duration sseTimeout) { this.sseTimeout = sseTimeout; }
+        public String getToken() { return token; }
+        public void setToken(String token) { this.token = token; }
     }
 
     // ------------------------------------------------------------------ 便捷转换

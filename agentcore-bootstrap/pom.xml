@@ -9,36 +9,38 @@
     <version>0.1.0-SNAPSHOT</version>
   </parent>
   <artifactId>agentcore-bootstrap</artifactId>
-  <description>启动与装配：读取配置、组装运行时、可执行 jar</description>
+  <description>独立部署版：基于 Spring Boot 的命令行与 HTTP 服务（bin/agentcore），组装交给 starter 的自动装配</description>
   <dependencies>
-    <dependency><groupId>com.agentcore</groupId><artifactId>agentcore-interfaces</artifactId></dependency>
+    <dependency><groupId>com.agentcore</groupId><artifactId>agentcore-spring-boot-starter</artifactId></dependency>
+    <!-- serve 命令的 Web 服务 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc</artifactId>
+      <version>${spring-boot.version}</version>
+    </dependency>
+    <!-- 配置了 spring.datasource.url 时把会话和记忆存进数据库；JDBC 驱动通过 AGENTCORE_CLASSPATH 加入 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+      <version>${spring-boot.version}</version>
+    </dependency>
     <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><version>${h2.version}</version><scope>test</scope></dependency>
   </dependencies>
   <build>
     <finalName>agentcore</finalName>
     <plugins>
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-shade-plugin</artifactId>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <version>${spring-boot.version}</version>
+        <configuration>
+          <mainClass>com.agentcore.bootstrap.AgentCoreApplication</mainClass>
+          <!-- ZIP 布局使用 PropertiesLauncher：可以用 -Dloader.path 追加外部 jar（例如 JDBC 驱动） -->
+          <layout>ZIP</layout>
+        </configuration>
         <executions>
           <execution>
-            <phase>package</phase>
-            <goals><goal>shade</goal></goals>
-            <configuration>
-              <createDependencyReducedPom>false</createDependencyReducedPom>
-              <transformers>
-                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>com.agentcore.bootstrap.AgentCoreApplication</mainClass>
-                </transformer>
-                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-              </transformers>
-              <filters>
-                <filter>
-                  <artifact>*:*</artifact>
-                  <excludes><exclude>META-INF/*.SF</exclude><exclude>META-INF/*.DSA</exclude><exclude>META-INF/*.RSA</exclude><exclude>module-info.class</exclude></excludes>
-                </filter>
-              </filters>
-            </configuration>
+            <goals><goal>repackage</goal></goals>
           </execution>
         </executions>
       </plugin>

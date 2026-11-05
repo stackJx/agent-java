@@ -1,6 +1,5 @@
 package com.agentcore.interfaces.cli;
 
-import com.agentcore.application.AgentRuntime;
 import com.agentcore.application.AgentService;
 import com.agentcore.domain.agent.AgentEvent;
 import com.agentcore.domain.agent.RunResult;
@@ -8,6 +7,7 @@ import com.agentcore.domain.conversation.Conversation;
 import com.agentcore.domain.conversation.ConversationSummary;
 import com.agentcore.domain.conversation.TokenUsage;
 import com.agentcore.domain.memory.MemoryEntry;
+import com.agentcore.domain.memory.MemoryRepository;
 import com.agentcore.domain.tool.Tool;
 import java.util.Map;
 import java.util.Optional;
@@ -28,16 +28,23 @@ public final class ChatRepl {
               /exit            退出
             多行输入：行尾加 \\ 继续；运行中按 Ctrl+C 取消当前任务。""";
 
-    private final AgentRuntime runtime;
     private final AgentService service;
+    private final MemoryRepository memory;
+    private final Map<String, String> warnings;
     private final ConsoleIO io;
     private final Ansi a;
     private final ConsoleRenderer renderer;
     private String conversationId;
 
-    public ChatRepl(AgentRuntime runtime, ConsoleIO io, Ansi ansi, boolean showThinking, String conversationId) {
-        this.runtime = runtime;
-        this.service = runtime.service();
+    /**
+     * @param memory   长期记忆，未启用时为 null（/memory 命令用）
+     * @param warnings 启动期的非致命问题（例如某个 MCP 服务器没起来），进入对话前显示
+     */
+    public ChatRepl(AgentService service, MemoryRepository memory, Map<String, String> warnings, ConsoleIO io, Ansi ansi,
+                    boolean showThinking, String conversationId) {
+        this.service = service;
+        this.memory = memory;
+        this.warnings = warnings == null ? Map.of() : warnings;
         this.io = io;
         this.a = ansi;
         this.renderer = new ConsoleRenderer(io.out(), io.err(), ansi, showThinking);
@@ -46,8 +53,8 @@ public final class ChatRepl {
 
     public int run() {
         Conversation c = service.find(conversationId).orElseThrow();
-        io.err().println(a.bold("agentcore · " + runtime.engine().model().describe() + " · 会话 " + conversationId));
-        runtime.warnings().forEach((k, v) -> io.err().println(a.yellow(k + "：" + v)));
+        io.err().println(a.bold("agentcore · " + service.engine().model().describe() + " · 会话 " + conversationId));
+        warnings.forEach((k, v) -> io.err().println(a.yellow(k + "：" + v)));
         if (c.size() > 0) {
             io.err().println(a.dim("已恢复 " + c.size() + " 条历史消息：" + c.title()));
         }
@@ -113,7 +120,7 @@ public final class ChatRepl {
                         + ConsoleRenderer.tokens(x.tokensAfter())).orElse("无需压缩")));
             }
             case "/tools" -> {
-                for (Tool t : runtime.engine().tools()) {
+                for (Tool t : service.engine().tools()) {
                     String first = t.description().lines().findFirst().orElse("");
                     io.err().printf("  %-32s %s  %s%n", t.name(), t.readOnly() ? "只读" : "    ",
                             first.length() > 70 ? first.substring(0, 70) : first);
@@ -139,8 +146,8 @@ public final class ChatRepl {
                 }
             }
             case "/memory" -> {
-                if (runtime.memory() != null) {
-                    for (MemoryEntry m : runtime.memory().list()) {
+                if (memory != null) {
+                    for (MemoryEntry m : memory.list()) {
                         io.err().println("  " + m.name() + " [" + m.type().wire() + "] " + m.description());
                     }
                 }

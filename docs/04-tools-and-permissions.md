@@ -69,7 +69,7 @@ flowchart TD
 
 | 模式 | 配置写法 | 行为 | 适合 |
 |---|---|---|---|
-| `default` | `permissions.mode: default` | 只读工具直接放行，其他询问 | 有人在旁边看着 |
+| `default` | `agentcore.permissions.mode: default` | 只读工具直接放行，其他询问 | 有人在旁边看着 |
 | `auto` | `auto` / `yolo`，命令行 `--yolo` | 除了 deny 规则，全部放行 | 沙箱、容器、无人值守 |
 | `readonly` | `readonly`，命令行 `--readonly` | 只允许只读工具，其他一律拒绝 | 只想让它看看、不许改 |
 
@@ -78,16 +78,17 @@ flowchart TD
 写法是 `工具名(匹配模式)`，两部分都支持 `*` 通配符，省略括号表示匹配该工具的所有调用：
 
 ```yaml
-permissions:
-  allow:
-    - "bash(git status*)"        # 允许 git status 开头的命令
-    - "bash(mvn test*)"
-    - "mcp__filesystem__read*"   # 允许某个 MCP 服务器的所有读工具
-  deny:
-    - "bash(rm -rf *)"
-    - "write_file(/etc/*)"
-  ask:
-    - "web_fetch"                # web_fetch 虽然只读，也每次都问
+agentcore:
+  permissions:
+    allow:
+      - "bash(git status*)"        # 允许 git status 开头的命令
+      - "bash(mvn test*)"
+      - "mcp__filesystem__read*"   # 允许某个 MCP 服务器的所有读工具
+    deny:
+      - "bash(rm -rf *)"
+      - "write_file(/etc/*)"
+    ask:
+      - "web_fetch"                # web_fetch 虽然只读，也每次都问
 ```
 
 `bash` 有额外的安全处理，防止用一条 allow 规则偷带危险命令：
@@ -116,7 +117,7 @@ permissions:
 ```mermaid
 sequenceDiagram
     participant FE as 前端
-    participant HTTP as AgentHttpServer / AgentController
+    participant HTTP as AgentController
     participant AA as AsyncApprover
     participant Eng as AgentEngine（运行线程）
 
@@ -217,7 +218,7 @@ Tool lookup = FunctionTool.builder("lookup")
 
 **方式三：直接实现 `Tool` 接口**，需要完全控制时用，比如 `TaskTool`。
 
-**方式四：MCP 服务器**。在配置里写 `mcp_servers`，启动时连接、列出远端工具，每个包装成一个 `McpTool`。远端标了 `readOnlyHint` 的会被当成只读工具。
+**方式四：MCP 服务器**。在配置里写 `agentcore.mcp-servers`，启动时连接、列出远端工具，每个包装成一个 `McpTool`。远端标了 `readOnlyHint` 的会被当成只读工具。
 
 ### 写工具时要注意
 
@@ -256,7 +257,7 @@ sequenceDiagram
     participant Model as 模型
 
     Main->>Task: execute({description, prompt, agent: "researcher"})
-    Note over Task: 检查嵌套深度（subagent_max_depth，默认 1）
+    Note over Task: 检查嵌套深度（agentcore.subagent-max-depth，默认 1）
     Note over Task: 复制父引擎（toBuilder）：<br/>同一套权限策略、审批人、钩子<br/>工具按角色白名单过滤，去掉 ask_user<br/>到达最大深度时去掉 task<br/>不保存会话（repository = null）
     Task->>Child: run(新会话, prompt)
     loop 子 Agent 自己的多轮循环
@@ -275,9 +276,10 @@ sequenceDiagram
 - 每个角色可以配置自己的提示词、工具白名单、模型（比如用更便宜的模型做搜索）：
 
 ```yaml
-subagents:
-  researcher:
-    description: 只读调研：搜索代码/网页并给出结论
-    tools: [read_file, glob, grep, web_fetch]
-    model: deepseek:deepseek-flash
+agentcore:
+  subagents:
+    researcher:
+      description: 只读调研：搜索代码/网页并给出结论
+      tools: [read_file, glob, grep, web_fetch]
+      model: deepseek:deepseek-flash
 ```

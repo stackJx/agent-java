@@ -4,7 +4,6 @@ import static com.agentcore.infrastructure.llm.mock.ScriptedModelGateway.call;
 import static com.agentcore.infrastructure.llm.mock.ScriptedModelGateway.reply;
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.agentcore.application.AgentRuntime;
 import com.agentcore.application.AgentService;
 import com.agentcore.domain.agent.AgentDefinition;
 import com.agentcore.domain.agent.AgentEngine;
@@ -54,7 +53,7 @@ class ChatReplTest {
                 .approver(new ConsoleApprover(io, ansi)).build();
         AgentService svc = new AgentService(engine, new InMemoryConversationRepository());
         String id = svc.startConversation(Map.of()).id().value();
-        int code = new ChatRepl(new AgentRuntime(svc, engine, null, Map.of(), List.of()), io, ansi, true, id).run();
+        int code = new ChatRepl(svc, null, Map.of(), io, ansi, true, id).run();
         assertEquals(0, code);
 
         String stdout = out.toString(StandardCharsets.UTF_8);

@@ -7,13 +7,13 @@
 
 | 文档 | 讲什么 | 适合什么时候看 |
 |---|---|---|
-| [01 架构总览](01-architecture.md) | 七个模块、分层和依赖方向、启动时怎么把各部分拼起来 | 第一篇，先建立全局印象 |
+| [01 架构总览](01-architecture.md) | 七个模块、分层和依赖方向（只有领域层不依赖框架，外层统一用 Spring）、启动时怎么把各部分拼起来 | 第一篇，先建立全局印象 |
 | [02 Agent 主循环](02-agent-loop.md) | 一次运行的完整流程：调模型 → 执行工具 → 再调模型；重试、压缩、取消、插话 | 想知道"Agent 到底怎么跑起来的" |
 | [03 会话聚合与事件溯源](03-conversation.md) | `Conversation` 存了什么、为什么只追加、工具调用一一对应的规则 | 想改历史、存储相关逻辑之前 |
 | [04 工具、权限、审批与钩子](04-tools-and-permissions.md) | 一次工具调用经过的每一道关卡；四种定义工具的方式；子 Agent | 要加工具、做风控时 |
 | [05 模型适配](05-model-gateways.md) | Claude / OpenAI Chat / OpenAI Responses 三个适配器，消息格式怎么互转 | 要接新模型、排查模型报错时 |
 | [06 存储](06-persistence.md) | 会话和记忆存在哪：内存、JSONL 文件、数据库；并发写入怎么防冲突 | 部署、换数据库时 |
-| [07 接入与扩展](07-integration.md) | 命令行、HTTP/SSE、Spring Boot 三种用法；常见扩展的写法 | 要把它嵌进自己的系统时 |
+| [07 接入与扩展](07-integration.md) | 命令行、HTTP/SSE、嵌入 Spring Boot、不用 Spring 手动组装；常见扩展的写法 | 要把它嵌进自己的系统时 |
 
 ## 推荐阅读路线
 
@@ -61,7 +61,7 @@
 | `agentcore-domain` | 核心规则，零第三方依赖 | `agent/AgentEngine.java`、`conversation/Conversation.java` |
 | `agentcore-application` | 用例编排 | `AgentService.java` |
 | `agentcore-infrastructure` | 模型、工具、存储等适配器 | `llm/ModelGatewayFactory.java` |
-| `agentcore-interfaces` | 命令行和 HTTP 接口 | `http/AgentHttpServer.java` |
-| `agentcore-bootstrap` | 读配置、组装、`main` 入口 | `RuntimeAssembler.java` |
-| `agentcore-spring-boot-starter` | Spring Boot 自动装配 | `AgentCoreAutoConfiguration.java` |
+| `agentcore-interfaces` | 命令行和 HTTP 接口（Spring MVC 注解控制器） | `web/AgentController.java`、`cli/ChatRepl.java` |
+| `agentcore-spring-boot-starter` | Spring Boot 自动装配，唯一的组装方式 | `AgentCoreAutoConfiguration.java` |
+| `agentcore-bootstrap` | 独立部署版 `bin/agentcore`，一个 Spring Boot 应用 | `AgentCoreApplication.java`、`agentcore-cli.yml` |
 | `agentcore-spring-boot-sample` | 业务方使用示例 | `OrderTools.java` |

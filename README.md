@@ -22,18 +22,20 @@
 
 ```bash
 cd agentcore-java
-mvn -q install                                   # 构建并运行 80 个测试，生成 agentcore-bootstrap/target/agentcore.jar
+mvn -q install                                   # 构建并运行 83 个测试，生成 agentcore-bootstrap/target/agentcore.jar
 
 export DEEPSEEK_API_KEY=sk-...                   # 或 ANTHROPIC_API_KEY=...
 bin/agentcore                                    # 交互式对话
 bin/agentcore run "统计这个目录下各类文件的数量"   # 一次性执行（--events 输出 JSONL 事件）
 bin/agentcore -m anthropic:claude-opus-5-5       # 指定模型
 bin/agentcore -c                                 # 继续上一次会话
-bin/agentcore serve --port 8080                  # 启动 HTTP + SSE 服务
+bin/agentcore serve --port 8080                  # 启动 HTTP + SSE 服务（接口前缀 /api/agent）
 bin/agentcore init                               # 生成 agentcore.yaml 配置模板
 ```
 
 没有 API Key 时可以先用离线假模型体验：`bin/agentcore -m mock`。
+
+`bin/agentcore` 本身就是一个 Spring Boot 应用：组装全部由 `agentcore-spring-boot-starter` 完成，配置文件格式和 Spring Boot 的 `application.yml` 一样，任意配置项都可以用 `--配置项=值` 从命令行覆盖（例如 `--agentcore.web.token=xxx`）。
 
 交互模式命令：`/help /new /compact /tools /usage /sessions /resume <id> /memory /exit`；运行中按 `Ctrl+C` 取消当前任务。
 
@@ -42,16 +44,16 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
 ## 分层架构
 
 ```
-                       ┌───────────────────────────────────────────┐
-                       │ bootstrap   装配 + main（读取配置 → 组装运行时）│
-                       └──────────────┬───────────────┬────────────┘
+        ┌───────────────────────────────────────────────────────────────────┐
+        │ bootstrap（bin/agentcore，Spring Boot 应用）· spring-boot-starter（自动装配）│
+        └──────────────┬───────────────┬────────────────────────────────────┘
                                       │               │
             ┌─────────────────────────▼──┐     ┌──────▼──────────────────────────────┐
             │ interfaces  接口层           │     │ infrastructure  基础设施层（适配器）    │
-            │  CLI REPL / HTTP+SSE / 审批  │     │  Anthropic SDK / OpenAI 兼容网关       │
+            │  CLI REPL / Spring MVC 接口  │     │  Anthropic SDK / OpenAI 网关           │
             └──────────────┬─────────────┘     │  内置工具 / @AgentTool / MCP 客户端    │
                            │                   │  会话与记忆仓储（文件 / JDBC）/ Skills │
-            ┌──────────────▼─────────────┐     │  YAML 配置                            │
+            ┌──────────────▼─────────────┐     │                                      │
             │ application  应用层          │     └──────────────┬──────────────────────┘
             │  AgentService（用例编排）     │                    │ 实现端口
             │  子 Agent / 提示词 / 记忆工具 │                    │
@@ -69,16 +71,16 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
             └────────────────────────────────────────────────────────────────────────┘
 ```
 
-依赖方向由 Maven 模块强制：`domain ← application ← interfaces ← bootstrap / spring-boot-starter`，`domain ← infrastructure`（基础设施只依赖领域、实现领域定义的端口）。**领域层与应用层不依赖任何框架**（领域层的 import 只有 `java.*`）；Spring 只出现在 starter 这一层，独立部署版完全不需要 Spring。
+依赖方向由 Maven 模块强制：`domain ← application ← interfaces ← spring-boot-starter ← bootstrap`，`domain ← infrastructure`（基础设施只依赖领域、实现领域定义的端口）。**硬性规则只有一条：领域层不依赖任何框架**（import 只有 `java.*`），业务规则因此可以单独测试、换框架也不用动。外层统一用 Spring Boot：接口层是 Spring MVC 注解控制器，组装只有 starter 的自动装配这一套，独立部署版也是一个 Spring Boot 应用。应用层和基础设施层目前没用到 Spring，可以不借助容器手动组装（见下文"不用 Spring 手动组装"）。
 
 | 模块 | 职责 | 主要类型 |
 |---|---|---|
 | `agentcore-domain` | 业务规则本身 | `Conversation`、`AgentEngine`、`Tool`、`PermissionPolicy`、`ModelGateway`、`ConversationCompactor` |
 | `agentcore-application` | 用例编排：加载/保存聚合、单会话单运行、异步句柄；子 Agent；系统提示词 | `AgentService`、`TaskTool`、`SystemPromptBuilder`、`MemoryTools` |
-| `agentcore-infrastructure` | 端口实现与技术细节 | `AnthropicModelGateway`、`OpenAiCompatibleModelGateway`、`JsonlConversationRepository`、`JdbcConversationRepository`、`McpServerManager`、`AnnotatedTools`、`Settings` |
-| `agentcore-interfaces` | 对外接口 | `ChatRepl`、`ConsoleApprover`、`AgentHttpServer`、`HttpApprover` |
-| `agentcore-bootstrap` | 独立部署版：根据配置装配一切；可执行 jar | `RuntimeAssembler`、`AgentCoreApplication` |
-| `agentcore-spring-boot-starter` | Spring Boot 4 自动装配 + Spring MVC SSE 接口 | `AgentCoreAutoConfiguration`、`AgentCoreProperties`、`AgentController` |
+| `agentcore-infrastructure` | 端口实现与技术细节 | `AnthropicModelGateway`、`OpenAiResponsesModelGateway`、`OpenAiCompatibleModelGateway`、`JsonlConversationRepository`、`JdbcConversationRepository`、`McpServerManager`、`AnnotatedTools` |
+| `agentcore-interfaces` | 对外接口：命令行、HTTP + SSE（Spring MVC 注解控制器） | `ChatRepl`、`ConsoleApprover`、`AgentController`、`BearerTokenInterceptor` |
+| `agentcore-spring-boot-starter` | Spring Boot 4 自动装配：唯一的组装方式 | `AgentCoreAutoConfiguration`、`AgentCoreProperties`、`AgentCoreWebAutoConfiguration` |
+| `agentcore-bootstrap` | 独立部署版 `bin/agentcore`：Spring Boot 命令行 + HTTP 服务，可执行 jar | `AgentCoreApplication`、`agentcore-cli.yml` |
 | `agentcore-spring-boot-sample` | 示例应用（电商客服），以 `spring-boot-starter-parent` 为父 POM | `OrderTools`、`RefundLimitHook` |
 
 ### 核心领域模型
@@ -88,7 +90,7 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
 1. 历史只追加，唯一的整体替换是「压缩」；
 2. 助手发起的工具调用必须由紧随其后的一条用户消息**逐一**给出结果（id 一一对应），在此之前不能追加新输入或回复。
 
-这保证历史永远是各厂商 API 都接受的合法序列，进程崩溃或取消后也能用 `repairDanglingToolCalls` 修复。所有状态变化产生领域事件（`ConversationStarted` / `MessageAppended` / `ConversationCompacted` / `UsageRecorded`），仓储把**事件直接作为存储格式**追加写入，加载时回放重建。
+这保证历史永远是各厂商 API 都接受的合法序列，进程崩溃或取消后也能用 `repairDanglingToolCalls` 修复。所有状态变化产生领域事件（`ConversationStarted` / `MessageAppended` / `ConversationCompacted` / `UsageRecorded` / `MetadataUpdated`），仓储把**事件直接作为存储格式**追加写入，加载时回放重建。
 
 **`AgentEngine`（领域服务）** 驱动一次运行：
 
@@ -104,22 +106,7 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
 
 ## 作为库嵌入
 
-### 用配置一键装配
-
-```java
-Settings settings = Settings.load(null, Path.of("."));          // 读 agentcore.yaml
-try (AgentRuntime rt = RuntimeAssembler.assemble(settings, RuntimeAssembler.Options.of(Path.of("."))
-        .withApprover(req -> Approval.allow())                  // 审批端口：接你的审批流
-        .withExtraTools(AnnotatedTools.from(new OrderTools()))  // 业务工具
-        .withHooks(List.of(myHook)))) {                         // 业务规则
-    String id = rt.service().startConversation(Map.of()).id().value();
-    RunResult r = rt.service().chat(id, "帮我查一下订单 A1001", event -> {
-        if (event instanceof AgentEvent.TextDelta t) System.out.print(t.text());
-    });
-}
-```
-
-完整可运行的例子见 `agentcore-bootstrap/src/test/java/com/agentcore/bootstrap/EmbeddingExample.java`（客服退款场景：注解工具 + 钩子 + 审批 + 事件流，离线可跑，并且作为测试持续验证）。
+在 Spring Boot 应用里使用：引入 starter 即可，见下文 [Spring Boot 4 集成](#spring-boot-4-集成)。下面的工具、钩子、权限写法两种方式通用。
 
 ### 定义工具
 
@@ -166,7 +153,7 @@ PermissionPolicy policy = PermissionPolicy.of("default",
 
 判定顺序：deny > ask > allow > 模式默认（只读工具允许，其余询问）。没有 Approver 时，需要询问的操作会被拒绝（适合无人值守）。对 bash，deny 命中任一子命令即拒绝；allow 要求每个子命令都被覆盖，且含 `$( )`、反引号、重定向时 allow 不生效。
 
-### 直接用领域层组装（不读配置）
+### 不用 Spring 手动组装
 
 ```java
 ConversationRepository repository = new JsonlConversationRepository(Path.of("sessions"));
@@ -179,6 +166,8 @@ AgentEngine engine = AgentEngine.builder()
         .build();
 AgentService service = new AgentService(engine, repository);
 ```
+
+完整可运行的例子见 `agentcore-bootstrap/src/test/java/com/agentcore/bootstrap/EmbeddingExample.java`（客服退款场景：注解工具 + 钩子 + 审批 + 事件流，离线可跑，并且作为测试持续验证）。
 
 ---
 
@@ -243,7 +232,7 @@ public class SupportFacade {
 | `PermissionPolicy` | `agentcore.permissions.*` | 按租户动态生成 |
 | `ToolRegistry` | 内置工具 + 记忆 + Skills + MCP + task + 容器里的 `Tool` / `@AgentTool` Bean | — |
 | `AgentEngine` / `AgentService` | 由以上组件组装 | — |
-| `AgentController` | `{base-path}` 下的 REST + SSE 接口（与独立部署版格式一致） | `agentcore.web.enabled=false` 关闭后自己写 |
+| `AgentController`（接口层） | `{base-path}` 下的 REST + SSE 接口，独立部署版用的也是它；`agentcore.web.token` 开启 Bearer 鉴权 | `agentcore.web.enabled=false` 关闭后自己写 |
 
 配置项有完整的 IDE 提示（starter 生成了 `spring-configuration-metadata.json`）。完整示例见 `agentcore-spring-boot-sample/`：
 
@@ -260,70 +249,83 @@ curl -N -X POST localhost:8080/api/agent/conversations/$ID/messages -H 'Content-
 
 ## HTTP / SSE 接口
 
-独立部署版：`bin/agentcore serve --port 8080`（JDK 内置 HttpServer + 虚拟线程，零额外依赖）；Spring Boot 版路径前缀为 `agentcore.web.base-path`（默认 `/api/agent`），另多一个 `GET {base}/approvals?conversationId=` 查询等待中的审批。配置 `server.token` 后所有 `/api` 请求需要 `Authorization: Bearer <token>`。
+独立部署版用 `bin/agentcore serve --port 8080` 启动（默认只监听 127.0.0.1，`--host 0.0.0.0` 对外开放）；嵌入 Spring Boot 应用时由 starter 自动注册。两者是同一个注解控制器（`agentcore-interfaces/.../web/AgentController.java`），路径前缀 `agentcore.web.base-path`，默认 `/api/agent`。配置 `agentcore.web.token` 后，除 health 外的请求都需要 `Authorization: Bearer <token>`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/health` | 健康检查 |
-| GET | `/api/conversations` | 会话列表 |
-| POST | `/api/conversations` | 新建会话 → `{"id": ...}` |
-| GET | `/api/conversations/{id}` | 会话详情（消息、用量、是否运行中） |
-| POST | `/api/conversations/{id}/messages` | `{"text": "...", "images": [...]}` → **SSE 事件流** |
-| POST | `/api/conversations/{id}/cancel` | 取消正在运行的任务 |
-| POST | `/api/conversations/{id}/steer` | `{"text": "..."}` 运行中插话 |
-| POST | `/api/approvals/{requestId}` | `{"decision": "allow\|always\|deny", "message": "..."}` |
+| GET | `/api/agent/health` | 健康检查（不需要 token） |
+| GET | `/api/agent/conversations` | 会话列表 |
+| POST | `/api/agent/conversations` | 新建会话 → `{"id": ...}` |
+| GET | `/api/agent/conversations/{id}` | 会话详情（消息、用量、是否运行中） |
+| POST | `/api/agent/conversations/{id}/messages` | `{"text": "...", "images": [...]}` → **SSE 事件流** |
+| POST | `/api/agent/conversations/{id}/cancel` | 取消正在运行的任务 |
+| POST | `/api/agent/conversations/{id}/steer` | `{"text": "..."}` 运行中插话 |
+| GET | `/api/agent/approvals?conversationId=` | 等待中的审批 |
+| POST | `/api/agent/approvals/{requestId}` | `{"decision": "allow\|always\|deny", "message": "..."}` |
 
-SSE 事件：`run_started` `turn_started` `text_delta` `thinking_delta` `tool_call_streaming` `assistant_message` `tool_started` `tool_progress` `permission_decided` `tool_finished` `compacted` `retrying` `notice` `run_finished`，以及审批用的 `approval_required`（携带 `request_id`、工具名、参数，前端确认后调用 `/api/approvals/{request_id}`，超时自动拒绝）。
+SSE 事件：`run_started` `turn_started` `text_delta` `thinking_delta` `tool_call_streaming` `assistant_message` `tool_started` `tool_progress` `permission_decided` `tool_finished` `compacted` `retrying` `notice` `run_finished`，以及审批用的 `approval_required`（携带 `request_id`、工具名、参数，前端确认后调用 `/api/agent/approvals/{request_id}`，超时自动拒绝）。
 
 ```bash
-ID=$(curl -s -X POST localhost:8080/api/conversations | jq -r .id)
-curl -N -X POST localhost:8080/api/conversations/$ID/messages -d '{"text":"你好"}'
+bin/agentcore serve -m mock --agentcore.web.token=secret
+ID=$(curl -s -X POST -H 'Authorization: Bearer secret' localhost:8080/api/agent/conversations | jq -r .id)
+curl -N -X POST -H 'Authorization: Bearer secret' -H 'Content-Type: application/json' \
+     localhost:8080/api/agent/conversations/$ID/messages -d '{"text":"你好"}'
 ```
 
 ---
 
-## 配置（agentcore.yaml）
+## 配置
 
-`bin/agentcore init` 生成带注释的模板。查找顺序（后者覆盖前者）：`~/.agentcore/config.yaml` → `./.agentcore/config.yaml` → `./agentcore.yaml` → `--config`。字符串支持 `${ENV}` / `${ENV:-默认值}`。
+配置文件格式就是 Spring Boot 的 `application.yml`：agentcore 的配置都在 `agentcore:` 下，`spring.*`、`server.*` 照常写。嵌入 Spring Boot 应用时写在应用自己的 `application.yml` 里；独立部署版（`bin/agentcore`）按以下顺序读取，后者覆盖前者：
+
+1. `~/.agentcore/config.yaml`（设置了 `AGENTCORE_HOME` 时为 `$AGENTCORE_HOME/config.yaml`）
+2. `<工作目录>/.agentcore/config.yaml`
+3. `<工作目录>/agentcore.yaml`
+4. `--config <文件>`
+5. 命令行参数：`-m`、`--yolo` 等快捷选项，以及任意 `--配置项=值`
+
+独立部署版不会读取当前目录的 `application.yml`，在别的 Spring 项目目录里运行也不会串配置。`bin/agentcore init` 生成带注释的模板。引用环境变量写 `${ENV}` 或 `${ENV:默认值}`。键名推荐 kebab-case（`api-key-env`），`api_key_env` 这种下划线写法 Spring 也能识别。
 
 ```yaml
-model: deepseek:deepseek-v4-pro          # <provider>:<model>
+agentcore:
+  model: deepseek:deepseek-v4-pro          # <provider>:<model>；不写时按 API Key 环境变量推断
+  providers:
+    deepseek: {api-key-env: DEEPSEEK_API_KEY}
+    anthropic: {effort: high}              # thinking / thinking-display / fallbacks / eager-input-streaming 等均可覆盖
+    openai: {reasoning-effort: medium}     # openai:<模型> 默认走 Responses API；reasoning-summary: auto 可显示思考摘要
+    myvllm:                                # 任意 OpenAI 兼容服务：model 写成 myvllm:<模型名>
+      type: openai                         # openai = Chat Completions；openai-responses = Responses API
+      base-url: http://localhost:8000/v1
+      api-key: EMPTY
+      context-window: 131072
 
-providers:
-  deepseek: {api_key_env: DEEPSEEK_API_KEY}
-  anthropic: {effort: high}              # thinking / thinking_display / fallbacks / eager_input_streaming 等均可覆盖
-  openai: {reasoning_effort: medium}     # openai:<模型> 默认走 Responses API；reasoning_summary: auto 可显示思考摘要
-  myvllm:                                # 任意 OpenAI 兼容服务：model 写成 myvllm:<模型名>
-    type: openai                         # openai = Chat Completions；openai-responses = Responses API
-    base_url: http://localhost:8000/v1
-    api_key: EMPTY
-    context_window: 131072
+  permissions:
+    mode: default                          # default / auto / readonly
+    allow: ["bash(git status*)", "mcp__filesystem__read*"]
+    deny: ["bash(rm -rf *)"]
 
-permissions:
-  mode: default                          # default / auto / readonly
-  allow: ["bash(git status*)", "mcp__filesystem__read*"]
-  deny: ["bash(rm -rf *)"]
+  mcp-servers:
+    filesystem: {command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "."]}
+    remote: {url: "https://example.com/mcp", headers: {Authorization: "Bearer ${TOKEN}"}}
 
-mcp_servers:
-  filesystem: {command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "."]}
-  remote: {url: "https://example.com/mcp", headers: {Authorization: "Bearer ${TOKEN}"}}
+  subagents:
+    researcher:
+      description: 只读调研：搜索代码/网页并给出结论
+      tools: [read_file, glob, grep, web_fetch]
+      model: deepseek:deepseek-flash       # 子 Agent 可以用更便宜的模型
 
-subagents:
-  researcher:
-    description: 只读调研：搜索代码/网页并给出结论
-    tools: [read_file, glob, grep, web_fetch]
-    model: deepseek:deepseek-flash       # 子 Agent 可以用更便宜的模型
+  context: {threshold: 0.75}               # summarizer-model 可指定更便宜的压缩模型
+  memory: {enabled: true, dir: ~/.agentcore/memory}
+  skills: {dirs: [.agentcore/skills, ~/.agentcore/skills]}
+  sessions: {dir: ~/.agentcore/sessions}
+  web: {token: "${AGENTCORE_TOKEN:}", approval-timeout: 5m}
 
-context: {threshold: 0.75, summarizer_model: null}
-memory: {enabled: true, dir: ~/.agentcore/memory}
-skills: {dirs: [.agentcore/skills, ~/.agentcore/skills]}
-sessions: {dir: ~/.agentcore/sessions}
-server: {port: 8080, token: "${AGENTCORE_TOKEN}"}
+server: {port: 8080}
 ```
 
 内置预设：`anthropic` `openai` `deepseek` `qwen`(dashscope) `moonshot`(kimi) `zhipu`(glm) `openrouter` `ollama` `vllm`。项目根目录的 `AGENTS.md` 会自动并入系统提示词。
 
-**OpenAI 的两种协议**：`openai:<模型>` 默认走 Responses API（`/responses`），因为 OpenAI 新模型的函数调用只支持这个协议。默认无状态（`store: false`）：每次发送完整历史，上一轮的 output 条目（加密推理、`phase` 等）原样回放，数据只存在你自己的仓储里。要强制走旧协议，写 `type: openai-chat`；其他支持 Responses 的服务（代理、Azure 等）写 `type: openai-responses`。可调参数：`reasoning_effort`、`reasoning_summary`（auto / concise / detailed）、`store`、`max_tokens`（默认 32000，思考也计入输出）。
+**OpenAI 的两种协议**：`openai:<模型>` 默认走 Responses API（`/responses`），因为 OpenAI 新模型的函数调用只支持这个协议。默认无状态（`store: false`）：每次发送完整历史，上一轮的 output 条目（加密推理、`phase` 等）原样回放，数据只存在你自己的仓储里。要强制走旧协议，写 `type: openai-chat`；其他支持 Responses 的服务（代理、Azure 等）写 `type: openai-responses`。可调参数：`reasoning-effort`、`reasoning-summary`（auto / concise / detailed）、`store`、`max-tokens`（默认 32000，思考也计入输出）。
 
 ---
 
@@ -342,10 +344,14 @@ server: {port: 8080, token: "${AGENTCORE_TOKEN}"}
 
 三张表（前缀默认 `agent_`）：`agent_conversation`（会话摘要：标题、消息数、用量、版本号）、`agent_conversation_event`（领域事件，按序只追加，JSON 存大文本字段）、`agent_memory`（长期记忆，按 scope 隔离）。增删改查全部是标准 SQL，分页用 JDBC 的 `setMaxRows`；只有建表语句因库而异，平台按 JDBC 元数据自动识别。
 
-**开启方式**
+**开启方式**：嵌入 Spring Boot 应用和独立部署版写法完全一样，用 Spring 的 `spring.datasource` 配数据源（连接池是 Spring Boot 默认的 HikariCP），再显式打开开关。
 
 ```yaml
-# Spring Boot：使用应用已有的数据源与连接池
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/agent?useUnicode=true&characterEncoding=utf8
+    username: agent
+    password: ${DB_PASSWORD}
 agentcore:
   persistence:
     jdbc:
@@ -356,17 +362,12 @@ agentcore:
       memory-scope: default
 ```
 
-```yaml
-# 独立部署版（agentcore.yaml）：配置了 url 即启用；JDBC 驱动通过 AGENTCORE_CLASSPATH 加入
-persistence:
-  jdbc:
-    url: jdbc:mysql://localhost:3306/agent?useUnicode=true&characterEncoding=utf8
-    username: agent
-    password: ${DB_PASSWORD}
-```
+独立部署版的 jar 里不带 JDBC 驱动，通过 `AGENTCORE_CLASSPATH` 加进来（多个用冒号分隔，也可以写目录）。单机不想装数据库时用 SQLite：
 
 ```bash
-AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar bin/agentcore
+AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar bin/agentcore serve
+AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
+    --spring.datasource.url=jdbc:sqlite:/data/agent.db --agentcore.persistence.jdbc.enabled=true
 ```
 
 **行为说明**
@@ -385,19 +386,19 @@ AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar bin/agentcore
 | 接入新的模型协议 | 实现 `ModelGateway`：把 `ModelRequest` 转成厂商请求，流式回调 `onText/onThinking/onToolCallStart`，返回 `ModelResponse` |
 | 换存储 | 关系库：开启 JDBC 存储即可；其他存储（MongoDB / Redis …）：实现 `ConversationRepository`，把 `conversation.pullEvents()` 追加写入，加载时 `Conversation.replay(events)` |
 | 加业务工具 | `@AgentTool` 注解方法，或 `FunctionTool`，或实现 `Tool` 接口 |
-| 接外部系统 | 写成 MCP 服务器后配置 `mcp_servers`，或直接写工具 |
+| 接外部系统 | 写成 MCP 服务器后配置 `agentcore.mcp-servers`，或直接写工具 |
 | 审计 / 脱敏 / 风控 | 实现 `AgentHook` |
 | 接审批流（钉钉、飞书、工单…） | 实现 `Approver`（可以阻塞等待；`PermissionRequest.requestId` 用于异步回传） |
-| 定制人设与流程 | `agent.system_prompt` / `agent.instructions` / 项目里放 `AGENTS.md` |
+| 定制人设与流程 | `agentcore.agent.system-prompt` / `agentcore.agent.instructions` / 项目里放 `AGENTS.md` |
 | 领域知识包 | skills 目录放 `<name>/SKILL.md`（frontmatter 写 name、description） |
-| 多 Agent 分工 | `subagents` 定义角色，主 Agent 用 `task` 工具派活（可并行） |
+| 多 Agent 分工 | `agentcore.subagents` 定义角色，主 Agent 用 `task` 工具派活（可并行） |
 | 自定义前端 | 消费 `AgentEvent`（或 HTTP SSE），实现 `Approver` 与 `UserPrompter` |
 
 ---
 
 ## 关键设计决策
 
-1. **领域层零依赖，规则写在领域里。** 工具结果配对、截断参数不执行、权限判定、压缩策略都是领域逻辑，有完整单元测试；换模型、换存储、换框架都不动它。
+1. **领域层零依赖，规则写在领域里；外层统一用 Spring。** 工具结果配对、截断参数不执行、权限判定、压缩策略都是领域逻辑，有完整单元测试，换模型、换存储、换框架都不动它。领域之外只保留一套组装（starter 的自动装配）、一套配置（`agentcore.*`）、一套 Web 接口（注解控制器），独立部署版也是 Spring Boot 应用，便于后续写插件、做配置预热。
 2. **历史只追加，原样回放。** 助手消息同时保存厂商原始内容块（`ProviderPayload`），回发给同一厂商时原样发送：Claude 的 thinking 签名、服务端拒答回退标记靠这一点保持有效；DeepSeek 思考模式在带工具的请求里要求回传历史 `reasoning_content`，适配器会自动带上；OpenAI Responses 的 output 条目（含加密推理）同样原样回放。prompt cache 是前缀匹配，所以系统提示词在会话开始时固定、工具顺序稳定，压缩采用「摘要后开启一段新对话」，而不是就地删改。
 3. **事件即存储。** 会话的领域事件就是存储格式（JSONL 文件的每一行 / 数据库事件表的每一行），天然支持审计、回放与崩溃恢复；压缩前的完整历史也保留在事件里。
 4. **安全约束在代码里强制执行。** 覆盖文件前必须先读、文件被外部改过要重新读、截断的工具调用绝不执行、权限规则能识别命令拼接。
@@ -410,16 +411,16 @@ AGENTCORE_CLASSPATH=/opt/drivers/mysql-connector-j.jar bin/agentcore
 ## 测试
 
 ```bash
-mvn test        # 80 个测试，不需要任何 API Key
+mvn test        # 83 个测试，不需要任何 API Key
 ```
 
 | 模块 | 覆盖 |
 |---|---|
 | domain | 会话不变式与事件回放、权限规则（命令拼接）、参数校验与类型转换、引擎主循环（并行、错误回填、审批与记住、钩子、截断保护、pause/refusal/max_turns、重试、取消、插话、自动压缩） |
-| infrastructure | 通过本地假 SSE 服务走**真实的 anthropic-java SDK**与 OpenAI 兼容解析路径（thinking 签名回放、缓存参数、beta 回退头、reasoning_content 回传、坏 JSON 回报），OpenAI Responses 流式解析（工具循环、加密推理与 phase 回放、截断/拒答/失败事件、跨厂商历史转换）、回退回放规则、内置工具、JSONL 仓储崩溃恢复、JDBC 仓储（SQLite 实测 + 其余平台建表脚本 × H2 兼容模式：回放、乐观并发冲突、过期缓存刷新、记忆隔离、100KB 大字段）、记忆与 Skills、注解工具、配置合并、MCP（stdio 分页 + 服务端请求、HTTP 会话）、子 Agent 并行与工具隔离、异步取消 |
-| interfaces | HTTP + SSE 全流程（含 Web 审批）、命令行 REPL（审批、deny 规则、命令） |
-| bootstrap | 嵌入示例与 CLI 端到端 |
-| spring-boot-starter | 数据库存储的开启 / 默认关闭 / 无数据源回退、自动装配（收集 @AgentTool / Tool / AgentHook Bean、属性绑定、Bean 替换、非 Web 场景）、Spring MVC SSE + Web 审批 |
+| infrastructure | 通过本地假 SSE 服务走**真实的 anthropic-java SDK**与 OpenAI 兼容解析路径（thinking 签名回放、缓存参数、beta 回退头、reasoning_content 回传、坏 JSON 回报），OpenAI Responses 流式解析（工具循环、加密推理与 phase 回放、截断/拒答/失败事件、跨厂商历史转换）、回退回放规则、内置工具、JSONL 仓储崩溃恢复、JDBC 仓储（SQLite 实测 + 其余平台建表脚本 × H2 兼容模式：回放、乐观并发冲突、过期缓存刷新、记忆隔离、100KB 大字段）、记忆与 Skills、注解工具、按 API Key 推断默认模型、MCP（stdio 分页 + 服务端请求、HTTP 会话）、子 Agent 并行与工具隔离、异步取消 |
+| interfaces | 命令行 REPL（审批、deny 规则、命令）；Web 控制器由 starter 的测试覆盖 |
+| bootstrap | 不用 Spring 的嵌入示例；Spring Boot 命令行端到端：run / sessions / init、配置文件读取顺序与覆盖、`--config`、启动失败的错误提示、经 `spring.datasource` 存数据库 |
+| spring-boot-starter | 数据库存储的开启 / 默认关闭 / 无数据源回退、自动装配（收集 @AgentTool / Tool / AgentHook Bean、属性绑定、Bean 替换、非 Web 场景）、HTTP + SSE 全流程与 Web 审批、Bearer Token 鉴权与 health |
 | spring-boot-sample | 以 Boot 4.1.2 为父 POM，经由真实 anthropic-java SDK（指向本地假 Claude 服务）跑通业务工具 + 钩子 + 审批 + SSE + 会话持久化 |
 
 > 尚未用真实 API Key 跑过（当前环境没有 Key）。拿到 Key 后建议先跑 `bin/agentcore run "读取 README.md 并总结"` 验证。

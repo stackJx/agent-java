@@ -1,6 +1,6 @@
 # 01 架构总览
 
-一句话：**领域层定义"Agent 怎么工作"的规则和它需要的接口（端口），基础设施层用具体技术实现这些接口，最外层负责读配置、把零件拼起来、对外提供命令行 / HTTP / Spring Boot 入口。**
+一句话：**领域层定义"Agent 怎么工作"的规则和它需要的接口（端口），基础设施层用具体技术实现这些接口，最外层用 Spring Boot 读配置、把零件拼起来、对外提供命令行和 HTTP 入口。**
 
 ## 1. 七个 Maven 模块和依赖方向
 
@@ -11,30 +11,28 @@ flowchart BT
     domain["agentcore-domain<br/>领域层：规则 + 端口<br/>只用 java.*"]
     application["agentcore-application<br/>应用层：用例编排"]
     infrastructure["agentcore-infrastructure<br/>基础设施层：适配器<br/>anthropic-java / Jackson / JDBC"]
-    interfaces["agentcore-interfaces<br/>接口层：命令行 / HTTP+SSE"]
-    bootstrap["agentcore-bootstrap<br/>独立部署：读配置 + 组装 + main"]
-    starter["agentcore-spring-boot-starter<br/>Spring Boot 自动装配"]
+    interfaces["agentcore-interfaces<br/>接口层：命令行 / Spring MVC 控制器"]
+    starter["agentcore-spring-boot-starter<br/>Spring Boot 自动装配<br/>唯一的组装方式"]
+    bootstrap["agentcore-bootstrap<br/>独立部署版 bin/agentcore<br/>一个 Spring Boot 应用"]
     sample["agentcore-spring-boot-sample<br/>业务方示例"]
 
     application --> domain
     infrastructure --> domain
     interfaces --> application
     interfaces --> infrastructure
-    bootstrap --> interfaces
+    bootstrap --> starter
     starter --> application
     starter --> infrastructure
     starter --> interfaces
     sample --> starter
 ```
 
-几条硬规则：
+规则：
 
-- **领域层只 import `java.*`**。不碰 Spring、Jackson、JDBC、HTTP。所以核心逻辑可以单独测试，换框架也不用动它。
-- **应用层也不依赖框架**，只依赖领域层。
+- **硬性规则只有一条：领域层只 import `java.*`**。不碰 Spring、Jackson、JDBC、HTTP。所以核心逻辑可以单独测试，换框架也不用动它。这条由 Maven 模块强制：领域层的代码 import 了 Jackson 或 Spring，编译直接失败。
+- **外层统一用 Spring Boot**：组装只有 starter 的自动装配一套，配置只有 `agentcore.*` 一套，HTTP 接口是 Spring MVC 注解控制器。独立部署版 `bin/agentcore` 本身也是 Spring Boot 应用，和嵌入业务系统时走同一条路径。后续写插件、做配置预热都可以直接用 Spring 的机制。
+- 应用层和基础设施层目前没有用到 Spring（不是硬性要求，只是还不需要），所以也能不借助容器、手动 `new` 出来用，测试就是这么写的。
 - **基础设施层不依赖应用层**（只在测试里用到）。它只做一件事：实现领域层定义的接口。
-- Spring 只出现在 starter 和 sample 里。独立部署版（`bin/agentcore`）完全不需要 Spring。
-
-这些规则由 Maven 模块强制：如果领域层的代码 import 了 Jackson，编译直接失败。
 
 ## 2. 端口与适配器（六边形架构）
 
@@ -44,9 +42,8 @@ flowchart BT
 flowchart LR
     subgraph IN["驱动方：谁来调用 Agent"]
         CLI["ChatRepl<br/>命令行"]
-        HTTP["AgentHttpServer<br/>JDK HTTP + SSE"]
-        MVC["AgentController<br/>Spring MVC"]
-        EMB["你的代码<br/>直接调用"]
+        MVC["AgentController<br/>Spring MVC + SSE"]
+        EMB["你的代码<br/>注入 AgentService"]
     end
 
     subgraph APP["应用层"]
@@ -76,7 +73,6 @@ flowchart LR
     end
 
     CLI --> SVC
-    HTTP --> SVC
     MVC --> SVC
     EMB --> SVC
     SVC --> ENGINE
@@ -121,33 +117,7 @@ flowchart LR
 
 ## 4. 启动时怎么组装
 
-### 独立部署版（`bin/agentcore`）
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Main as AgentCoreApplication.main
-    participant Settings as Settings
-    participant Asm as RuntimeAssembler
-    participant Factory as ModelGatewayFactory
-    participant UI as ChatRepl 或 AgentHttpServer
-
-    Main->>Settings: load()：合并默认值和各级 YAML，替换环境变量
-    Main->>Asm: assemble(settings, options)
-    Asm->>Factory: create("deepseek:deepseek-v4-pro")
-    Factory-->>Asm: ModelGateway
-    Note over Asm: 依次注册工具：内置工具 → 记忆工具 → Skill 工具 → MCP 工具 → 宿主额外工具 → task
-    Note over Asm: 选择会话仓储：配置了 JDBC 用数据库，否则 JSONL 文件，关闭会话则用内存
-    Note over Asm: SystemPromptBuilder 拼出系统提示词，此后固定不变
-    Asm-->>Main: AgentRuntime（AgentService + AgentEngine + 需要关闭的资源）
-    Main->>UI: 启动命令行或 HTTP 服务
-```
-
-对应代码：`agentcore-bootstrap/src/main/java/com/agentcore/bootstrap/RuntimeAssembler.java` 的 `assemble` 方法，里面的注释按上面的顺序分段。
-
-### Spring Boot 版
-
-同样的零件，改由 Spring 的 Bean 来组装。每个 Bean 都带 `@ConditionalOnMissingBean`，你在自己的应用里定义同类型 Bean 就能替换掉默认的。
+不管是独立部署版还是嵌入业务系统，组装都只有一套：`agentcore-spring-boot-starter` 的自动装配。每个 Bean 都带 `@ConditionalOnMissingBean`，在自己的应用里定义同类型 Bean 就能替换默认实现。
 
 ```mermaid
 flowchart TD
@@ -184,11 +154,34 @@ flowchart TD
 
 对应代码：`agentcore-spring-boot-starter/.../AgentCoreAutoConfiguration.java`、`jdbc/AgentCoreJdbcAutoConfiguration.java`、`web/AgentCoreWebAutoConfiguration.java`。
 
+### 独立部署版（`bin/agentcore`）怎么启动
+
+`AgentCoreApplication` 是一个 `@SpringBootApplication`，它自己不组装任何东西，只是把命令行参数翻译成 Spring 配置，然后按命令启动容器：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Main as AgentCoreApplication.main
+    participant Spring as SpringApplication
+    participant Auto as starter 自动装配
+    participant UI as ChatRepl / AgentController
+
+    Main->>Main: 解析参数：-m、--yolo、--cwd……翻译成 --agentcore.xxx=...
+    Main->>Spring: run(args)。serve 用 Web 模式，其余不启动 Web
+    Note over Spring: 读内置的 agentcore-cli.yml，它再依次导入<br/>~/.agentcore/config.yaml → ./.agentcore/config.yaml → ./agentcore.yaml → --config
+    Spring->>Auto: 创建模型、工具、仓储、引擎、AgentService
+    Note over Main,Spring: chat 命令在启动前额外注册 ConsoleApprover / ConsolePrompter，<br/>审批和提问就在终端里进行
+    Spring-->>Main: 容器
+    Main->>UI: chat：ChatRepl 读键盘；run：跑一次就退出；serve：Tomcat 提供 HTTP 接口
+```
+
+对应代码：`agentcore-bootstrap/src/main/java/com/agentcore/bootstrap/AgentCoreApplication.java`、`agentcore-bootstrap/src/main/resources/agentcore-cli.yml`。
+
 ## 5. 一次请求穿过哪些类（概览）
 
 ```mermaid
 flowchart LR
-    U["用户输入"] --> I["接口层<br/>ChatRepl / AgentHttpServer / AgentController"]
+    U["用户输入"] --> I["接口层<br/>ChatRepl / AgentController"]
     I --> S["AgentService.chat / chatAsync<br/>加载会话，保证同一会话同时只有一个运行"]
     S --> E["AgentEngine.run<br/>主循环"]
     E --> M["ModelGateway.stream<br/>调模型，流式回调增量"]

@@ -35,6 +35,23 @@ public final class ModelGatewayFactory implements Function<String, ModelGateway>
         this.env = env;
     }
 
+    /** 没配置模型时，按已有的 API Key 环境变量推断一个默认模型；都没有时返回 null。 */
+    public static String defaultModel(Function<String, String> env) {
+        if (env.apply("AGENTCORE_MODEL") != null) {
+            return env.apply("AGENTCORE_MODEL");
+        }
+        if (env.apply("ANTHROPIC_API_KEY") != null || env.apply("ANTHROPIC_AUTH_TOKEN") != null) {
+            return "anthropic:claude-opus-5-5";
+        }
+        if (env.apply("DEEPSEEK_API_KEY") != null) {
+            return "deepseek:deepseek-v4-pro";
+        }
+        if (env.apply("OPENAI_API_KEY") != null) {
+            return "openai:gpt-5";
+        }
+        return null;
+    }
+
     @Override
     public ModelGateway apply(String spec) {
         return create(spec);

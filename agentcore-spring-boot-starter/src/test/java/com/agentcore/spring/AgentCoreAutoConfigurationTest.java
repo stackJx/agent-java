@@ -23,7 +23,7 @@ import com.agentcore.infrastructure.llm.mock.ScriptedModelGateway;
 import com.agentcore.infrastructure.persistence.InMemoryConversationRepository;
 import com.agentcore.infrastructure.tool.annotation.AgentTool;
 import com.agentcore.infrastructure.tool.annotation.Param;
-import com.agentcore.spring.web.AgentController;
+import com.agentcore.interfaces.web.AgentController;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;

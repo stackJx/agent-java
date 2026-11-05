@@ -11,20 +11,20 @@ flowchart TD
         c0{"配置"}
         c0 -- "配置了 JDBC" --> c1["JdbcConversationRepository<br/>数据库，多实例可共享"]
         c0 -- "默认" --> c2["JsonlConversationRepository<br/>每个会话一个 .jsonl 文件"]
-        c0 -- "sessions.enabled: false<br/>或 --no-session" --> c3["InMemoryConversationRepository<br/>进程退出就没了"]
+        c0 -- "agentcore.sessions.enabled: false<br/>或 --no-session" --> c3["InMemoryConversationRepository<br/>进程退出就没了"]
     end
     subgraph mem["长期记忆：MemoryRepository"]
         m0{"配置"}
         m0 -- "配置了 JDBC" --> m1["JdbcMemoryRepository<br/>按 scope 隔离"]
         m0 -- "默认" --> m2["FileMemoryRepository<br/>每条一个 Markdown 文件"]
-        m0 -- "memory.enabled: false" --> m3["不启用，也不注册记忆工具"]
+        m0 -- "agentcore.memory.enabled: false" --> m3["不启用，也不注册记忆工具"]
     end
 ```
 
 | 场景 | 推荐 |
 |---|---|
 | 本机命令行使用 | 默认的文件存储，开箱即用，文件可以直接看 |
-| 单机服务，不想装数据库 | SQLite：`persistence.jdbc.url: jdbc:sqlite:/data/agent.db` |
+| 单机服务，不想装数据库 | SQLite：`spring.datasource.url: jdbc:sqlite:/data/agent.db` + `agentcore.persistence.jdbc.enabled: true` |
 | 多实例部署 | MySQL / PostgreSQL 等，所有实例共享历史（但要按会话 ID 做粘性路由，见第 4 节） |
 | 测试 | 内存 |
 
@@ -128,7 +128,7 @@ erDiagram
 
 - `agent_conversation_event` 是真正的数据：事件按 `seq` 顺序存放，读会话就是 `ORDER BY seq` 读出来重放。
 - `agent_conversation` 是一张**摘要表**，存标题、用量、更新时间，让"会话列表"不用重放事件就能查出来；它的 `last_seq` 同时充当版本号。
-- 表名前缀默认 `agent_`，可以用 `table_prefix` 改。
+- 表名前缀默认 `agent_`，可以用 `agentcore.persistence.jdbc.table-prefix` 改。
 - 大文本字段按平台选类型：MySQL `LONGTEXT`、PostgreSQL `TEXT`、Oracle `CLOB`、SQL Server `NVARCHAR(MAX)`。
 
 ### 防止两个实例同时写坏一个会话（乐观并发）
@@ -162,7 +162,7 @@ sequenceDiagram
 
 ### 启用方式
 
-Spring Boot（用应用已有的数据源和连接池）：
+嵌入 Spring Boot 应用和独立部署版写法完全一样：用 Spring 的 `spring.datasource` 配数据源（连接池是 Spring Boot 默认的 HikariCP），再显式打开开关。
 
 ```yaml
 spring:
@@ -179,13 +179,14 @@ agentcore:
       memory-scope: default
 ```
 
-独立部署版（`agentcore.yaml`），配置了 `url` 就启用，JDBC 驱动通过环境变量 `AGENTCORE_CLASSPATH` 加进来：
+独立部署版的 jar 不带 JDBC 驱动，用环境变量 `AGENTCORE_CLASSPATH` 加进来（Spring Boot 的 `loader.path` 机制）：
 
-```yaml
-persistence:
-  jdbc:
-    url: jdbc:sqlite:/data/agent.db
+```bash
+AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
+    --spring.datasource.url=jdbc:sqlite:/data/agent.db --agentcore.persistence.jdbc.enabled=true
 ```
+
+没配置 `spring.datasource.url` 时，独立部署版会跳过数据源的自动装配，照常用文件存储。
 
 `create-if-missing` 会逐张表检查，只创建缺少的表，已有的表不动。
 

@@ -20,7 +20,6 @@ import com.agentcore.domain.permission.PermissionPolicy;
 import com.agentcore.domain.skill.SkillCatalog;
 import com.agentcore.domain.tool.ToolRegistry;
 import com.agentcore.domain.tool.UserPrompter;
-import com.agentcore.infrastructure.config.Settings;
 import com.agentcore.infrastructure.llm.ModelGatewayFactory;
 import com.agentcore.infrastructure.mcp.McpServerManager;
 import com.agentcore.infrastructure.persistence.FileMemoryRepository;
@@ -76,7 +75,7 @@ public class AgentCoreAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public ModelGateway agentModelGateway(AgentCoreProperties props, ModelGatewayFactory factory) {
-        String spec = props.getModel() != null ? props.getModel() : Settings.defaultModel(System::getenv);
+        String spec = props.getModel() != null && !props.getModel().isBlank() ? props.getModel() : ModelGatewayFactory.defaultModel(System::getenv);
         if (spec == null) {
             throw new IllegalStateException("agentcore: 没有配置模型。请设置 agentcore.model（例如 deepseek:deepseek-v4-pro），"
                     + "或设置 ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY 环境变量，或自定义 ModelGateway Bean。");

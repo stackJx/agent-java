@@ -15,7 +15,7 @@ import com.agentcore.domain.tool.Tool;
 import com.agentcore.domain.tool.ToolContext;
 import com.agentcore.domain.tool.ToolException;
 import com.agentcore.domain.tool.ToolOutput;
-import com.agentcore.infrastructure.config.Settings;
+import com.agentcore.infrastructure.llm.ModelGatewayFactory;
 import com.agentcore.infrastructure.persistence.FileMemoryRepository;
 import com.agentcore.infrastructure.persistence.FileSkillCatalog;
 import com.agentcore.infrastructure.persistence.JsonlConversationRepository;
@@ -198,23 +198,10 @@ class ToolsAndPersistenceTest {
     }
 
     @Test
-    void settingsMergeAndInterpolate() throws Exception {
-        Files.writeString(dir.resolve("agentcore.yaml"), """
-                model: mock
-                providers:
-                  x:
-                    api_key: ${MY_KEY}
-                    base_url: ${MISSING:-http://d}
-                permissions:
-                  allow: ['bash(ls *)']
-                """);
-        Map<String, String> env = Map.of("MY_KEY", "secret", "AGENTCORE_HOME", dir.resolve("home").toString());
-        Settings s = Settings.load(null, dir, env::get);
-        assertEquals("mock", s.string("model", null));
-        assertEquals(Map.of("api_key", "secret", "base_url", "http://d"), s.map("providers.x"));
-        assertEquals(List.of("bash(ls *)"), s.strings("permissions.allow"));
-        assertEquals("default", s.string("permissions.mode", null));
-        assertEquals(100, s.integer("agent.max_turns", 0));
-        assertEquals(dir.resolve("home") + "/sessions", s.string("sessions.dir", null));
+    void defaultModelIsInferredFromApiKeys() {
+        assertEquals("deepseek:deepseek-v4-pro", ModelGatewayFactory.defaultModel(Map.of("DEEPSEEK_API_KEY", "k")::get));
+        assertEquals("anthropic:claude-opus-5-5", ModelGatewayFactory.defaultModel(Map.of("ANTHROPIC_API_KEY", "k", "DEEPSEEK_API_KEY", "k")::get));
+        assertEquals("mock", ModelGatewayFactory.defaultModel(Map.of("AGENTCORE_MODEL", "mock", "OPENAI_API_KEY", "k")::get));
+        assertNull(ModelGatewayFactory.defaultModel(Map.<String, String>of()::get));
     }
 }

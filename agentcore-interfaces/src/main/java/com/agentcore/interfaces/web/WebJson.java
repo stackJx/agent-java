@@ -1,4 +1,4 @@
-package com.agentcore.interfaces.http;
+package com.agentcore.interfaces.web;
 
 import com.agentcore.domain.permission.Approval;
 import com.agentcore.domain.permission.Decision;
@@ -7,7 +7,7 @@ import com.agentcore.infrastructure.json.Json;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-/** Web 接口共用的 JSON 约定（JDK HttpServer 与 Spring MVC 控制器共用，保证两边格式一致）。 */
+/** Web 接口的 JSON 约定：审批请求、审批结果的格式（控制器与 SSE 推送共用）。 */
 public final class WebJson {
 
     private WebJson() {

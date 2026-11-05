@@ -1,0 +1,35 @@
+# 独立部署版（bin/agentcore）的内置默认配置。
+#
+# 启动时只读这个文件（不读当前目录的 application.yml，避免在别的 Spring 项目目录里运行时串配置），
+# 再按顺序导入用户配置，后面的覆盖前面的：
+#   1. ~/.agentcore/config.yaml（设置了 AGENTCORE_HOME 时为 $AGENTCORE_HOME/config.yaml）
+#   2. <工作目录>/.agentcore/config.yaml
+#   3. <工作目录>/agentcore.yaml
+#   4. --config 指定的文件
+#   5. 命令行参数（-m、--yolo、--spring.xxx=...、--agentcore.xxx=...）
+# 用户配置与 Spring Boot 应用的 application.yml 格式完全相同：agentcore.* 和 spring.* / server.*。
+spring:
+  config:
+    import:
+      - optional:file:${AGENTCORE_HOME:${user.home}/.agentcore}/config.yaml
+      - optional:file:${agentcore.agent.working-directory:.}/.agentcore/config.yaml
+      - optional:file:${agentcore.agent.working-directory:.}/agentcore.yaml
+  main:
+    banner-mode: off
+    log-startup-info: false
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  address: 127.0.0.1          # serve 默认只监听本机；对外提供服务时改成 0.0.0.0 并配置 agentcore.web.token
+  port: 8080
+
+logging:
+  level:
+    root: WARN
+    # 启动失败时由命令行打印一句话的原因，不输出 Spring 的长篇报告（需要时加 --debug）
+    org.springframework.boot.SpringApplication: OFF
+    org.springframework.boot.diagnostics: OFF
+    org.springframework.context.annotation.AnnotationConfigApplicationContext: ERROR
+    org.springframework.boot.web.server.servlet.context: ERROR

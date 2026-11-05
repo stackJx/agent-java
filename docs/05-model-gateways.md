@@ -167,38 +167,40 @@ sequenceDiagram
 
 ## 6. 各适配器的默认参数
 
+下面的参数都写在 `agentcore.providers.<名字>` 下，例如 `agentcore.providers.anthropic.effort: high`。
+
 ### Claude（`AnthropicModelGateway`）
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `max_tokens` | 64000 | 单次输出上限 |
-| `context_window` | 新模型 100 万，旧模型 20 万 | 压缩阈值按它算 |
+| `max-tokens` | 64000 | 单次输出上限 |
+| `context-window` | 新模型 100 万，旧模型 20 万 | 压缩阈值按它算 |
 | `thinking` | 新模型开启自适应思考（adaptive，显示摘要） | |
 | `effort` | 新模型 `high` | low / medium / high / xhigh / max |
 | 提示缓存 | 开启 | 系统提示词打显式断点，对话尾部自动缓存 |
 | `fallbacks` | 直连官方 API 且模型支持时开启 | 服务端拒答回退 |
-| `eager_input_streaming` | 直连官方 API 时开启 | 工具参数边生成边流式返回 |
+| `eager-input-streaming` | 直连官方 API 时开启 | 工具参数边生成边流式返回 |
 
-配置了自定义 `base_url`（走代理）时，`fallbacks` 和 `eager_input_streaming` 默认关闭，因为代理不一定支持。
+配置了自定义 `base-url`（走代理）时，`fallbacks` 和 `eager-input-streaming` 默认关闭，因为代理不一定支持。
 
 ### OpenAI Responses（`OpenAiResponsesModelGateway`）
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `max_tokens` | 32000 | 对应 `max_output_tokens`，推理也算输出，所以给得多 |
+| `max-tokens` | 32000 | 对应 `max_output_tokens`，推理也算输出，所以给得多 |
 | `store` | false | 不让 OpenAI 保存；同时请求 `reasoning.encrypted_content` 以便回放 |
-| `reasoning_effort` | 不传（用模型默认） | 单次请求的 `effort` 选项可以覆盖 |
-| `reasoning_summary` | 不传 | 设成 `auto` 能看到思考摘要（部分组织需先完成验证） |
+| `reasoning-effort` | 不传（用模型默认） | 单次请求的 `effort` 选项可以覆盖 |
+| `reasoning-summary` | 不传 | 设成 `auto` 能看到思考摘要（部分组织需先完成验证） |
 
 ### Chat Completions（`OpenAiCompatibleModelGateway`）
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `max_tokens` | 16000 | 参数名可用 `max_tokens_param` 改，有的服务要 `max_completion_tokens` |
-| `echo_reasoning` | 除 `openai` 预设外开启 | 回传历史 `reasoning_content`。DeepSeek 思考模式 + 工具调用时必须 |
-| `stream_usage` | 开启 | 请求 `stream_options.include_usage`，流的最后一块带用量 |
+| `max-tokens` | 16000 | 参数名可用 `max-tokens-param` 改，有的服务要 `max_completion_tokens` |
+| `echo-reasoning` | 除 `openai` 预设外开启 | 回传历史 `reasoning_content`。DeepSeek 思考模式 + 工具调用时必须 |
+| `stream-usage` | 开启 | 请求 `stream_options.include_usage`，流的最后一块带用量 |
 
-所有适配器都支持 `extra_body`（原样并入请求体）、`headers`、`timeout_seconds`。
+所有适配器都支持 `extra-body`（原样并入请求体）、`headers`、`timeout-seconds`。
 
 ## 7. 接一个新厂商
 

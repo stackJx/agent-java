@@ -1,9 +1,13 @@
 package com.agentcore.bootstrap;
 
-import com.agentcore.application.AgentRuntime;
+import com.agentcore.application.AgentService;
+import com.agentcore.application.prompt.SystemPromptBuilder;
+import com.agentcore.domain.agent.AgentDefinition;
+import com.agentcore.domain.agent.AgentEngine;
 import com.agentcore.domain.agent.AgentEvent;
 import com.agentcore.domain.agent.AgentHook;
 import com.agentcore.domain.agent.HookDecision;
+import com.agentcore.domain.agent.EngineSettings;
 import com.agentcore.domain.agent.RunResult;
 import com.agentcore.domain.conversation.ToolCall;
 import com.agentcore.domain.model.ModelGateway;
@@ -11,18 +15,19 @@ import com.agentcore.domain.permission.Approval;
 import com.agentcore.domain.tool.Tool;
 import com.agentcore.domain.tool.ToolContext;
 import com.agentcore.domain.tool.ToolException;
-import com.agentcore.infrastructure.config.Settings;
+import com.agentcore.domain.tool.ToolRegistry;
 import com.agentcore.infrastructure.llm.ModelGatewayFactory;
 import com.agentcore.infrastructure.llm.mock.ScriptedModelGateway;
+import com.agentcore.infrastructure.persistence.InMemoryConversationRepository;
 import com.agentcore.infrastructure.tool.annotation.AgentTool;
 import com.agentcore.infrastructure.tool.annotation.AnnotatedTools;
 import com.agentcore.infrastructure.tool.annotation.Param;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Map;
 
 /**
- * 把 agentcore 嵌入自己的 Java 应用：自定义业务工具（注解）+ 钩子（业务规则）+ 审批回调 + 事件流。
+ * 不用 Spring，把 agentcore 当普通 Java 库手动组装：自定义业务工具（注解）+ 钩子（业务规则）+ 审批回调 + 事件流。
+ * 领域层、应用层、基础设施层都不依赖框架，所以可以这样用；在 Spring Boot 应用里直接用 starter 即可（见 sample 模块）。
  *
  * <p>离线运行（脚本化假模型）：直接运行 main。
  * 接真实模型：设置环境变量 AGENTCORE_MODEL=deepseek:deepseek-v4-pro（以及对应的 API Key）。
@@ -75,38 +80,40 @@ public final class EmbeddingExample {
     }
 
     public static RunResult run(Path cwd, boolean print) {
-        Settings settings = Settings.load(null, cwd);
-        settings.set("sessions.enabled", false);
-        settings.set("memory.enabled", false);
-        settings.set("agent.instructions", "你是电商客服助手。退款前先查询订单。用中文回答。");
         String spec = System.getenv("AGENTCORE_MODEL");
-        ModelGateway model = spec != null ? new ModelGatewayFactory(settings.mapOfMaps("providers")).create(spec) : offlineModel();
+        ModelGateway model = spec != null ? new ModelGatewayFactory(Map.of()).create(spec) : offlineModel();
 
-        RuntimeAssembler.Options options = RuntimeAssembler.Options.of(cwd)
-                .withModel(model)
-                .withExtraTools(AnnotatedTools.from(new OrderTools()))
-                .withHooks(List.of(REFUND_LIMIT))
-                .withApprover(req -> {                       // 3. 审批回调：这里自动批准，真实场景可接审批流
+        InMemoryConversationRepository repository = new InMemoryConversationRepository();
+        AgentEngine engine = AgentEngine.builder()
+                .definition(new AgentDefinition("客服", new SystemPromptBuilder()
+                        .cwd(cwd)
+                        .instructions("你是电商客服助手。退款前先查询订单。用中文回答。")
+                        .build(), EngineSettings.defaults(cwd)))
+                .model(model)
+                .tools(new ToolRegistry(AnnotatedTools.from(new OrderTools())))
+                .hook(REFUND_LIMIT)
+                .approver(req -> {                           // 3. 审批回调：这里自动批准，真实场景可接审批流
                     if (print) {
                         System.out.println("   [审批] " + req.summary() + " → 批准");
                     }
                     return Approval.allow();
-                });
-        try (AgentRuntime rt = RuntimeAssembler.assemble(settings, options)) {
-            String id = rt.service().startConversation(Map.of("channel", "example")).id().value();
-            return rt.service().chat(id, "订单 A1001 和 A1002 都有问题，帮我退款", e -> {   // 4. 事件流
-                if (!print) {
-                    return;
-                }
-                switch (e) {
-                    case AgentEvent.TextDelta t -> System.out.print(t.text());
-                    case AgentEvent.ToolStarted t -> System.out.println("\n⏺ " + t.summary());
-                    case AgentEvent.ToolFinished f -> System.out.println("  ⎿ " + f.output().lines().findFirst().orElse(""));
-                    case AgentEvent.RunFinished f -> System.out.println("\n\n[" + f.stopReason().wire() + "] 轮数=" + f.turns());
-                    default -> { }
-                }
-            });
-        }
+                })
+                .repository(repository)
+                .build();
+        AgentService service = new AgentService(engine, repository);
+        String id = service.startConversation(Map.of("channel", "example")).id().value();
+        return service.chat(id, "订单 A1001 和 A1002 都有问题，帮我退款", e -> {   // 4. 事件流
+            if (!print) {
+                return;
+            }
+            switch (e) {
+                case AgentEvent.TextDelta t -> System.out.print(t.text());
+                case AgentEvent.ToolStarted t -> System.out.println("\n⏺ " + t.summary());
+                case AgentEvent.ToolFinished f -> System.out.println("  ⎿ " + f.output().lines().findFirst().orElse(""));
+                case AgentEvent.RunFinished f -> System.out.println("\n\n[" + f.stopReason().wire() + "] 轮数=" + f.turns());
+                default -> { }
+            }
+        });
     }
 
     public static void main(String[] args) {

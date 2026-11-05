@@ -206,7 +206,7 @@ flowchart LR
 步骤（`AgentEngine.Run#compact`）：
 
 1. `plan()`：最后一条是普通用户输入就保留它，其余全部拿去总结；最后一条是工具结果就全部总结（工具结果不能脱离它的调用单独存在）。
-2. `summarize()`：把要总结的部分渲染成纯文本记录（太长时保留开头 20% 和结尾 80%），让模型按固定的六个部分写交接摘要。可以用 `context.summarizer_model` 指定更便宜的模型。
+2. `summarize()`：把要总结的部分渲染成纯文本记录（太长时保留开头 20% 和结尾 80%），让模型按固定的六个部分写交接摘要。可以用 `agentcore.context.summarizer-model` 指定更便宜的模型。
 3. `buildCompactedHistory()`：拼出新历史。
 4. `conversation.compact(summary, newHistory)`：检查新历史合法（以用户消息开头、结尾没有未回复的工具调用），产生 `ConversationCompacted` 事件。
 

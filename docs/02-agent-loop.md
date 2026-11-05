@@ -105,7 +105,7 @@ flowchart TD
 | `PAUSE_TURN` | 模型 | Claude 的服务端工具暂停了 | 原样再发一次，让它继续 |
 | `REFUSAL` | 模型 | 安全拒答 | 结束运行 |
 | `CONTEXT_OVERFLOW` | 模型 | 生成过程中撑满了上下文窗口 | 有工具调用：不执行、回填错误，下一轮开始前强制压缩；没有：按 `MAX_TOKENS` 结束。（请求一发出去就超窗是另一种情况：适配器抛 `ContextOverflowException`，见第 4 节） |
-| `MAX_TURNS` | 引擎 | 轮数达到 `agent.max_turns`（默认 100） | 结束 |
+| `MAX_TURNS` | 引擎 | 轮数达到 `agentcore.agent.max-turns`（默认 100） | 结束 |
 | `CANCELLED` | 引擎 | 用户取消 | 结束 |
 | `ERROR` | 引擎 | 不可恢复的错误 | 结束 |
 
@@ -133,7 +133,7 @@ flowchart TD
 
 - **连续的**"可并行"工具（`Tool#concurrencySafe()`，默认等于只读）分成一批，在虚拟线程上并发执行；
 - 其余工具单独成批，按顺序执行；
-- 同时运行的工具数不超过 `maxToolConcurrency`（默认 8）；
+- 同时运行的工具数不超过 `agentcore.agent.max-tool-concurrency`（默认 8）；
 - 不管执行顺序如何，**结果按模型调用的顺序**回填。
 
 例子：模型依次调用 `read A`、`read B`、`write C`、`read D`：
@@ -191,7 +191,7 @@ sequenceDiagram
 - 上一次模型调用返回了真实用量，就以它为基线，只估算之后新增的消息；
 - 没有基线时，按字符数粗估：英文约 4 个字符 1 个 token，中文约 1.2 个字符 1 个 token。
 
-超过 `上下文窗口 × context.threshold`（默认 0.75），或超过 `context.max_tokens`（设置了的话），就触发压缩。
+超过 `上下文窗口 × agentcore.context.threshold`（默认 0.75），或超过 `agentcore.context.max-tokens`（设置了的话），就触发压缩。
 压缩的过程和"为什么不直接删旧消息"见 [03 会话聚合](03-conversation.md#5-上下文压缩)。
 
 ## 8. 对外发出的事件
