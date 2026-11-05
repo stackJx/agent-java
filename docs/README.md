@@ -3,6 +3,22 @@
 这组文档帮你从零读懂这个项目：它由哪几块组成、一次对话在代码里怎么走、每个设计为什么这样做。
 图都用 Mermaid 画，GitHub、IntelliJ IDEA、VS Code（装 Mermaid 插件）都能直接渲染。
 
+## 整体架构图（draw.io）
+
+[`agentcore-architecture.drawio`](agentcore-architecture.drawio) 有三页，用 [draw.io](https://app.diagrams.net) 桌面版、VS Code 的 Draw.io Integration 插件或 IntelliJ IDEA 的 Diagrams.net 插件打开即可编辑。下面是导出的预览图（修改 .drawio 后需要重新导出）：
+
+**第 1 页：系统总览**：七个模块分在哪一层、谁调用谁、端口由谁实现、连着哪些外部系统。
+
+![系统总览](images/architecture-1-overview.png)
+
+**第 2 页：一次对话的运行流程**：AgentEngine 主循环 ①～⑩、单个工具调用的 9 道关卡、对外发出的事件。
+
+![一次对话的运行流程](images/architecture-2-agent-loop.png)
+
+**第 3 页：配置与存储**：配置文件的读取顺序、模型和 API Key 怎么选、数据存在哪、启动脚本做了什么。
+
+![配置与存储](images/architecture-3-config-storage.png)
+
 ## 文档目录
 
 | 文档 | 讲什么 | 适合什么时候看 |
