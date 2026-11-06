@@ -8,24 +8,43 @@ import java.util.function.Consumer;
 final class StreamEventForwarder implements ModelStreamListener {
 
     private final Consumer<AgentEvent> emit;
+    /** false：只转发重试通知，不转发文字增量（生成压缩摘要时用，摘要不是给用户看的回复）。 */
+    private final boolean forwardContent;
 
-    StreamEventForwarder(Consumer<AgentEvent> emit) {
+    private StreamEventForwarder(Consumer<AgentEvent> emit, boolean forwardContent) {
         this.emit = emit;
+        this.forwardContent = forwardContent;
+    }
+
+    /** 模型回复：增量、重试都转发。 */
+    static StreamEventForwarder forReply(Consumer<AgentEvent> emit) {
+        return new StreamEventForwarder(emit, true);
+    }
+
+    /** 后台调用（压缩摘要）：只转发重试通知。 */
+    static StreamEventForwarder retryNoticesOnly(Consumer<AgentEvent> emit) {
+        return new StreamEventForwarder(emit, false);
     }
 
     @Override
     public void onText(String delta) {
-        emit.accept(new AgentEvent.TextDelta(delta));
+        if (forwardContent) {
+            emit.accept(new AgentEvent.TextDelta(delta));
+        }
     }
 
     @Override
     public void onThinking(String delta) {
-        emit.accept(new AgentEvent.ThinkingDelta(delta));
+        if (forwardContent) {
+            emit.accept(new AgentEvent.ThinkingDelta(delta));
+        }
     }
 
     @Override
     public void onToolCallStart(String id, String name) {
-        emit.accept(new AgentEvent.ToolCallStreaming(id, name));
+        if (forwardContent) {
+            emit.accept(new AgentEvent.ToolCallStreaming(id, name));
+        }
     }
 
     @Override
@@ -35,6 +54,6 @@ final class StreamEventForwarder implements ModelStreamListener {
 
     @Override
     public void onMalformedOutput(String error) {
-        emit.accept(AgentEvent.Notice.warning("malformed model output, retrying the turn: " + error));
+        emit.accept(AgentEvent.Notice.warning("malformed model output, retrying the turn (discard the partial reply): " + error));
     }
 }

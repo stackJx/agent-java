@@ -6,9 +6,9 @@
 - **多模型**：Claude（官方 `anthropic-java` SDK）、OpenAI（Responses API）、DeepSeek / 通义千问 / Kimi / 智谱 GLM / OpenRouter / vLLM / Ollama（OpenAI Chat Completions 兼容协议）。一行 `deepseek:deepseek-v4-pro` 即可切换。
 - **完整的 Agent 循环**：流式输出、工具调用、只读工具并行（虚拟线程）、各种停止原因（max_tokens / refusal / pause_turn / 超窗）、可重试错误退避、运行中取消与插话。
 - **工具**：`@AgentTool` 注解方法自动推断 JSON Schema，或用 `FunctionTool` lambda；执行前统一校验参数。内置读写编辑文件、glob、grep、bash、web_fetch、todo、ask_user。
-- **安全**：权限策略（allow / ask / deny 规则 + default / auto / readonly 模式）、审批端口（命令行 / Web 均已实现）、`AgentHook` 钩子；bash 规则能识别 `;`、`&&`、`$( )` 等命令拼接。
+- **安全**：权限策略（allow / ask / deny 规则 + default / auto / readonly 模式）、审批端口（命令行 / Web 均已实现）、`AgentHook` 钩子；bash 规则能识别 `;`、`&&`、`&`、`$( )` 等命令拼接；web_fetch 默认询问并拒绝内网地址；文件工具的规则按解析后的真实路径匹配（`..`、符号链接绕不过去），读工作目录之外的文件默认询问；没配 token 的 Web 接口只接受本机请求。
 - **长任务**：上下文自动压缩、会话事件溯源式持久化（默认 JSONL 文件，可切换到 MySQL / PostgreSQL / Oracle / SQL Server / 达梦 / 金仓等关系库，崩溃可恢复）、跨会话长期记忆。
-- **扩展**：Skills、子 Agent（独立上下文、并行、可换模型）、MCP（stdio 与 Streamable HTTP）。
+- **扩展**：Skills、子 Agent（独立上下文、并行、可换模型）、MCP（官方 MCP Java SDK，stdio 与 Streamable HTTP）。
 - **接口**：交互式 REPL、一次性执行、HTTP + SSE 服务（含 Web 审批流程）。
 - **Spring Boot 4 Starter**：引入依赖 + 写 `application.yml` 即可；业务工具就是带 `@AgentTool` 的 Spring Bean，钩子、审批、仓储都能用 Bean 替换。
 
@@ -22,7 +22,7 @@
 
 ```bash
 cd agentcore-java
-mvn -q install                                   # 构建并运行 95 个测试，生成 agentcore-bootstrap/target/agentcore.jar
+mvn -q install                                   # 构建并运行全部测试（约 150 个），生成 agentcore-bootstrap/target/agentcore.jar
 
 export DEEPSEEK_API_KEY=sk-...                   # 或 ANTHROPIC_API_KEY=...
 bin/agentcore                                    # 交互式对话
@@ -35,7 +35,7 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
 
 没有 API Key 时可以先用离线假模型体验：`bin/agentcore -m mock`。
 
-`bin/agentcore` 本身就是一个 Spring Boot 应用（启动脚本用 JVM 的类数据共享缓存加速：jar 更新后第一次运行约 6 秒，之后每次约 1.6 秒；`AGENTCORE_CDS=0` 可关闭）：组装全部由 `agentcore-spring-boot-starter` 完成，配置文件格式和 Spring Boot 的 `application.yml` 一样，任意配置项都可以用 `--配置项=值` 从命令行覆盖（例如 `--agentcore.web.token=xxx`）。
+`bin/agentcore` 本身就是一个 Spring Boot 应用（启动脚本用 JVM 的类数据共享缓存加速：jar 更新后第一次运行约 6 秒，之后每次约 1.7 秒；`AGENTCORE_CDS=0` 可关闭）：组装全部由 `agentcore-spring-boot-starter` 完成，配置文件格式和 Spring Boot 的 `application.yml` 一样，任意配置项都可以用 `--配置项=值` 从命令行覆盖（例如 `--agentcore.web.token=xxx`）。
 
 交互模式命令：`/help /new /compact /tools /usage /sessions /resume <id> /memory /exit`；运行中按 `Ctrl+C` 取消当前任务。
 
@@ -73,7 +73,7 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
 
 领域层每个模块内部再按 DDD 构件类型分子包：`model`（聚合、值对象）、`event`、`service`（领域服务）、`repository`（存取数据的端口）、`gateway`（调用外部系统或人的端口）、`exception`，完整结构见 [docs/01 第 3 节](docs/01-architecture.md#3-领域层的包)。
 
-依赖方向由 Maven 模块强制：`domain ← application ← interfaces ← spring-boot-starter ← bootstrap`，`domain ← infrastructure`（基础设施只依赖领域、实现领域定义的端口）。**硬性规则只有一条：领域层不依赖任何框架**（import 只有 `java.*`），业务规则因此可以单独测试、换框架也不用动。外层统一用 Spring Boot：接口层是 Spring MVC 注解控制器，组装只有 starter 的自动装配这一套，独立部署版也是一个 Spring Boot 应用。应用层和基础设施层目前没用到 Spring，可以不借助容器手动组装（见下文"不用 Spring 手动组装"）。
+依赖方向由 Maven 模块强制：`domain ← application ← interfaces ← spring-boot-starter ← bootstrap`，`domain ← infrastructure`（基础设施只依赖领域、实现领域定义的端口）。**硬性规则只有一条：领域层不依赖任何框架**（import 只有 `java.*`），业务规则因此可以单独测试、换框架也不用动。外层统一用 Spring Boot：接口层是 Spring MVC 注解控制器，组装只有 starter 的自动装配这一套，独立部署版也是一个 Spring Boot 应用。应用层和基础设施层不依赖 Spring 容器（基础设施层只把 Spring JDBC 当普通库用），可以不借助容器手动组装（见下文"不用 Spring 手动组装"）。
 
 | 模块 | 职责 | 主要类型 |
 |---|---|---|
@@ -153,7 +153,7 @@ PermissionPolicy policy = RulePermissionPolicy.of("default",
         List.of("web_fetch"));                                         // ask
 ```
 
-判定顺序：deny > ask > allow > 模式默认（只读工具允许，其余询问）。没有 Approver 时，需要询问的操作会被拒绝（适合无人值守）。对 bash，deny 命中任一子命令即拒绝；allow 要求每个子命令都被覆盖，且含 `$( )`、反引号、重定向时 allow 不生效。
+判定顺序：deny > ask > allow > 模式默认（只读工具允许，其余询问；web_fetch、读工作目录之外的文件也询问）。没有 Approver 时，需要询问的操作会被拒绝（适合无人值守）。对 bash，deny 命中任一子命令即拒绝；allow 要求每个子命令都被覆盖，且含 `$( )`、反引号、重定向时 allow 不生效。
 
 `PermissionPolicy` 是接口，上面用的 `RulePermissionPolicy` 是基于配置规则的默认实现。需要按租户、角色或对接公司权限系统判断时，自己实现它（只有一个方法，可以写成 lambda），Spring Boot 里定义一个 `PermissionPolicy` 类型的 Bean 就会替换掉默认实现：
 
@@ -260,23 +260,24 @@ ID=$(curl -s -X POST localhost:8080/api/agent/conversations | jq -r .id)
 curl -N -X POST localhost:8080/api/agent/conversations/$ID/messages -H 'Content-Type: application/json' -d '{"text":"订单 A1001 到哪了？"}'
 ```
 
-> 依赖说明：Spring Boot 4 默认用 Jackson 3（`tools.jackson`），Anthropic SDK 用 Jackson 2（`com.fasterxml.jackson`），两者包名不同、可以共存。agentcore 的 Jackson 2 版本与 Boot 4.1 的管理版本对齐（2.21.7），示例应用的测试在 Boot 管理的依赖版本下走通了真实的 Anthropic SDK 调用链路。接口 JSON 由 agentcore 自己序列化，不受应用 Jackson 配置影响。
+> 依赖说明：Spring Boot 4 默认用 Jackson 3（`tools.jackson`），Anthropic SDK、MCP SDK（`mcp-json-jackson2`）用 Jackson 2（`com.fasterxml.jackson`），两者包名不同、可以共存。agentcore 的 Jackson 2 版本与 Boot 4.1 的管理版本对齐（2.21.7），示例应用的测试在 Boot 管理的依赖版本下走通了真实的 Anthropic SDK 调用链路。接口 JSON 由 agentcore 自己序列化，不受应用 Jackson 配置影响。
 
 ---
 
 ## HTTP / SSE 接口
 
-独立部署版用 `bin/agentcore serve --port 8080` 启动（默认只监听 127.0.0.1，`--host 0.0.0.0` 对外开放）；嵌入 Spring Boot 应用时由 starter 自动注册。两者是同一个注解控制器（`agentcore-interfaces/.../web/AgentController.java`），路径前缀 `agentcore.web.base-path`，默认 `/api/agent`。配置 `agentcore.web.token` 后，除 health 外的请求都需要 `Authorization: Bearer <token>`。
+独立部署版用 `bin/agentcore serve --port 8080` 启动（默认只监听 127.0.0.1，`--host 0.0.0.0` 对外开放）；嵌入 Spring Boot 应用时由 starter 自动注册。两者是同一个注解控制器（`agentcore-interfaces/.../web/AgentController.java`），路径前缀 `agentcore.web.base-path`，默认 `/api/agent`。配置 `agentcore.web.token` 后，除 health 外的请求都需要 `Authorization: Bearer <token>`；没配置时只接受本机请求（`agentcore.web.local-only: false` 关闭）。多用户用 `agentcore.web.user-tokens.<用户名>`（或应用自己的 Spring Security），每个人只能看到自己的会话，见 docs/07。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/agent/health` | 健康检查（不需要 token） |
-| GET | `/api/agent/conversations` | 会话列表 |
+| GET | `/api/agent/conversations?limit=50` | 会话列表（最多 200 个；多用户时只列出自己的） |
 | POST | `/api/agent/conversations` | 新建会话 → `{"id": ...}` |
-| GET | `/api/agent/conversations/{id}` | 会话详情（消息、用量、是否运行中） |
+| GET | `/api/agent/conversations/{id}` | 会话详情（消息、用量、是否运行中；图片默认不带数据，`?include_images=true` 才带） |
+| DELETE | `/api/agent/conversations/{id}` | 删除会话（运行中返回 409） |
 | POST | `/api/agent/conversations/{id}/messages` | `{"text": "...", "images": [...]}` → **SSE 事件流** |
 | POST | `/api/agent/conversations/{id}/cancel` | 取消正在运行的任务 |
-| POST | `/api/agent/conversations/{id}/steer` | `{"text": "..."}` 运行中插话 |
+| POST | `/api/agent/conversations/{id}/steer` | `{"text": "..."}` 运行中插话（`accepted: false` 表示运行已结束，应作为新消息发送） |
 | GET | `/api/agent/approvals?conversationId=` | 等待中的审批 |
 | POST | `/api/agent/approvals/{requestId}` | `{"decision": "allow\|always\|deny", "message": "..."}` |
 
@@ -401,7 +402,7 @@ AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
 | 想做的事 | 做法 |
 |---|---|
 | 接入新的模型协议 | 实现 `ModelGateway`：把 `ModelRequest` 转成厂商请求，流式回调 `onText/onThinking/onToolCallStart`，返回 `ModelResponse` |
-| 换存储 | 关系库：开启 JDBC 存储即可；其他存储（MongoDB / Redis …）：实现 `ConversationRepository`，把 `conversation.pullEvents()` 追加写入，加载时 `Conversation.replay(events)` |
+| 换存储 | 关系库：开启 JDBC 存储即可；其他存储（MongoDB / Redis …）：实现 `ConversationRepository`，把 `conversation.pendingEvents()` 追加写入、成功后调用 `markEventsSaved`，加载时 `Conversation.replay(events)` |
 | 加业务工具 | `@AgentTool` 注解方法，或 `FunctionTool`，或实现 `Tool` 接口 |
 | 接外部系统 | 写成 MCP 服务器后配置 `agentcore.mcp-servers`，或直接写工具 |
 | 审计 / 脱敏 / 风控 | 实现 `AgentHook` |
@@ -429,7 +430,11 @@ AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
 ## 测试
 
 ```bash
-mvn test        # 95 个测试，不需要任何 API Key
+mvn test        # 约 150 个测试，不需要任何 API Key（CI：.github/workflows/ci.yml）
+
+# 对真实模型 API 跑冒烟测试（流式回复、工具调用往返、跨运行的历史回放），默认跳过，会产生少量费用：
+AGENTCORE_SMOKE_MODELS=anthropic:claude-haiku-5-5,deepseek:deepseek-v4-pro \
+  mvn -pl agentcore-infrastructure test -Dtest=RealModelSmokeTest
 ```
 
 | 模块 | 覆盖 |
@@ -451,7 +456,7 @@ mvn test        # 95 个测试，不需要任何 API Key
 - **真实数据库回归**：用 Testcontainers 在 MySQL / PostgreSQL / Oracle / SQL Server / 达梦上跑 `JdbcRepositoryTest`。
 - **多实例协同**：审批与插话通过数据库或消息队列跨实例传递，去掉粘性路由的要求；长会话加快照，减少回放事件数。
 - **沙箱执行**：bash 放进容器 / bubblewrap，文件工具限定工作区根目录。
-- **多租户与配额**：按租户隔离会话、记忆和权限，按模型计价并设置成本上限。
-- **可观测性**：OpenTelemetry trace（每轮模型调用、每次工具调用一个 span）。
+- **多租户与配额**：会话已按用户隔离；记忆和权限还没有按租户隔离，也没有按模型计价的成本上限。
+- **可观测性**：Micrometer 指标已有（docs/07）；OpenTelemetry trace（每轮模型调用、每次工具调用一个 span）还没有。
 - **评测集**：常见任务的回归用例，换模型或改提示词时可量化对比。
 - **更多 Provider**：Gemini、Bedrock / Vertex 上的 Claude。

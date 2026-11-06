@@ -12,7 +12,8 @@ classDiagram
         <<abstract>>
         -pendingEvents List~DomainEvent~
         #raise(event)
-        +pullEvents() List~DomainEvent~
+        +pendingEvents() List~DomainEvent~
+        +markEventsSaved(events)
     }
     class Conversation {
         -id ConversationId
@@ -147,9 +148,14 @@ sequenceDiagram
     Conv->>Conv: apply(MessageAppended) 更新内存里的消息列表、用量、标题
     Conv->>Root: raise(MessageAppended) 放进待保存列表
     Caller->>Repo: save(conversation)
-    Repo->>Root: pullEvents() 取走并清空
+    Repo->>Root: pendingEvents() 看一眼要写什么（不清空）
     Repo->>Store: 把这些事件追加写入
+    Repo->>Root: 写成功后 markEventsSaved(events) 才移出待保存列表
 ```
+
+**为什么先写后清**：如果先取走再写，写失败（数据库抖动、磁盘满）时这批事件就丢了，可之后的事件照样写进去 ——
+比如丢了"带工具调用的助手消息"、写进了"工具结果"，重放出来就是没有调用的工具结果，各家 API 都会拒绝，会话再也用不了。
+现在写失败时事件留在聚合里，下次保存连同新事件一起补写。
 
 读取时反过来：从存储里按顺序读出全部事件，`Conversation.replay(events)` 对每个事件调用同一个 `apply`，就还原出一模一样的会话。
 
@@ -216,9 +222,10 @@ flowchart LR
 - 模型厂商的提示缓存按前缀匹配。在中间删改，后面的缓存全部失效；而"摘要后开新对话"之后，新的前缀又能持续命中。
 - 新一代 Claude 会校验思考块所在的对话前缀，就地改写历史会让思考块失效甚至报错。摘要后的新对话对所有厂商都是一段干净的合法对话。
 
+摘要用带重试的模型生成（和主模型一样遇到限流会退避重试），而且可以被取消：生成摘要可能要很久，期间点取消会立刻停下。
 压缩失败（比如摘要模型报错）不会让运行失败，只会发一条 warning，下一轮再试。
 
 ## 6. 线程安全
 
 `Conversation` 的所有公开方法都是 `synchronized` 的，`messages()` 返回副本。
-所以运行中，HTTP 接口可以在另一个线程里安全地读取会话详情；仓储的身份映射也保证同一进程里同一个会话只有一个实例。
+所以运行中，HTTP 接口可以在另一个线程里安全地读取会话详情；仓储的身份映射也保证缓存期间同一进程里同一个会话只有一个实例。

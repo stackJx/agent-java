@@ -5,6 +5,7 @@ import static com.agentcore.infrastructure.llm.mock.ScriptedModelGateway.reply;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.agentcore.application.AgentService;
+import com.agentcore.application.approval.AsyncApprover;
 import com.agentcore.application.prompt.SystemPromptBuilder;
 import com.agentcore.application.subagent.SubAgentProfile;
 import com.agentcore.application.subagent.TaskTool;
@@ -18,6 +19,10 @@ import com.agentcore.domain.conversation.message.TextBlock;
 import com.agentcore.domain.conversation.message.ToolResult;
 import com.agentcore.domain.llm.model.ModelRequest;
 import com.agentcore.domain.llm.model.StopReason;
+import com.agentcore.domain.permission.model.Approval;
+import com.agentcore.domain.permission.model.Decision;
+import com.agentcore.domain.permission.model.PermissionRequest;
+import com.agentcore.domain.shared.cancel.CancellationToken;
 import com.agentcore.domain.tool.model.FunctionTool;
 import com.agentcore.domain.tool.model.Tool;
 import com.agentcore.domain.tool.model.ToolOutput;
@@ -29,8 +34,12 @@ import com.agentcore.infrastructure.persistence.JsonlConversationRepository;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -97,6 +106,8 @@ class ServiceAndSubAgentTest {
         Thread.sleep(300);
         assertTrue(svc.isRunning(id));
         assertThrows(IllegalStateException.class, () -> svc.chat(id, "again", e -> { }));
+        assertThrows(IllegalStateException.class, () -> svc.delete(id), "正在运行的会话不能删");
+        assertEquals(0, svc.deleteNotUpdatedSince(Instant.now().plusSeconds(60)), "保留期限清理会跳过正在运行的会话");
         assertTrue(svc.cancel(id));
         RunResult r = h.result().get();
         assertEquals(StopReason.CANCELLED, r.stopReason());
@@ -115,5 +126,31 @@ class ServiceAndSubAgentTest {
         String p = new SystemPromptBuilder().name("bot").cwd(dir).instructions("用中文").memory(mem).section("# Extra\nhello").build();
         assertTrue(p.startsWith("You are bot"));
         assertTrue(p.contains("Always answer in haiku.") && p.contains("用户喜欢乌龙茶") && p.contains("用中文") && p.endsWith("hello"));
+    }
+
+    @Test
+    void asyncApprovalEndsAsSoonAsTheRunIsCancelled() throws Exception {
+        AsyncApprover approver = new AsyncApprover(Duration.ofMinutes(5));
+        approver.attach("c1", request -> { }); // 前端收到了请求，但一直不回
+        CancellationToken cancel = new CancellationToken();
+        PermissionRequest request = new PermissionRequest("r1", "c1", "bash", Map.of(), "rm -rf build", "bash(rm -rf build)", "tool default");
+        CompletableFuture<Approval> answer = CompletableFuture.supplyAsync(() -> approver.approve(request, cancel));
+        Thread.sleep(100);
+        assertEquals(1, approver.pending("c1").size());
+        cancel.cancel();
+        assertEquals(Decision.DENY, answer.get(5, TimeUnit.SECONDS).decision(), "不用等满 5 分钟的审批超时");
+        assertTrue(approver.pending("c1").isEmpty());
+    }
+
+    @Test
+    void detachOnlyRemovesTheGivenChannel() {
+        AsyncApprover approver = new AsyncApprover(Duration.ofSeconds(1));
+        AsyncApprover.Channel first = request -> { };
+        AsyncApprover.Channel second = request -> { };
+        approver.attach("c1", first);
+        approver.attach("c1", second);
+        approver.detach("c1", first); // 上一次运行结束时清理自己的通道，不影响已经挂上的新通道
+        PermissionRequest request = new PermissionRequest("r1", "c1", "bash", Map.of(), "ls", "bash(ls)", "tool default");
+        assertTrue(approver.approve(request).message().contains("timed out"), "通道还在，所以是等到超时，而不是没有前端");
     }
 }

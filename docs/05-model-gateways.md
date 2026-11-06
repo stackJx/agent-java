@@ -24,9 +24,9 @@ public interface ModelGateway extends AutoCloseable {
 
 | 异常 | 含义 | 引擎的反应 |
 |---|---|---|
-| `ModelException`，`retryable() = true` | 限流、5xx、网络断开 | 指数退避重试 |
+| `ModelException`，`retryable() = true` | 限流、5xx、网络断开、流卡住或没结束就断开 | 指数退避重试（两次之间最多 60 秒）；服务端给了 `Retry-After`（`ModelException#retryAfter`）就按它等，最多 300 秒 |
 | `ModelException`，`retryable() = false` | 参数错误、鉴权失败等 | 运行以 ERROR 结束 |
-| `ContextOverflowException` | 输入超过上下文窗口 | 压缩后重做本轮 |
+| `ContextOverflowException` | 输入超过上下文窗口（只认明确的说法，例如 `maximum context length`、`prompt is too long`；单个 "too long" 不算） | 压缩后重做本轮 |
 | `MalformedOutputException` | 模型输出没法解析 | 直接重发本轮 |
 
 ## 2. 三个适配器
@@ -48,7 +48,7 @@ flowchart TD
 | `OpenAiResponsesModelGateway` | OpenAI Responses API | OpenAI 新模型、支持 Responses 的代理 | JDK `HttpClient` + 手写 SSE 解析 |
 | `OpenAiCompatibleModelGateway` | OpenAI Chat Completions | DeepSeek、通义千问、Kimi、智谱、OpenRouter、vLLM、Ollama…… | JDK `HttpClient` + 手写 SSE 解析 |
 
-OpenAI 系列为什么不用官方 SDK：各家"兼容"服务都有自己的扩展字段（DeepSeek 的 `reasoning_content`、`prompt_cache_hit_tokens` 等），手写解析更容易处理，也少一堆依赖。
+OpenAI 系列为什么不用官方 SDK：各家"兼容"服务都有自己的扩展字段（DeepSeek 的 `reasoning_content`、`prompt_cache_hit_tokens`，Responses 回放条目里的 `phase` 等），请求和响应都要按 JSON 处理才不会丢字段，SDK 能替我们做的只剩连接和读流这一小块（也就是 `OpenAiHttp`，约 160 行）。而官方 `openai-java` 的核心 jar 有 70 多 MB（包含 OpenAI 全部接口的类型），换上后可执行 jar 会从约 75 MB 涨到约 150 MB，不划算。
 
 内置预设（`ProviderPresets`）：`openai`、`deepseek`、`qwen`/`dashscope`、`moonshot`/`kimi`、`zhipu`/`glm`、`openrouter`、`ollama`、`vllm`。预设里有默认地址、API Key 的环境变量名、上下文窗口。
 
@@ -156,11 +156,17 @@ sequenceDiagram
 | 读流 | SDK 迭代事件 | `OpenAiHttp.readEvents`（两个 OpenAI 网关共用） | 同左 |
 | 拼完整消息 | SDK 的 `BetaMessageAccumulator` | 内部类 `StreamedReply` 按 `index` 累加 `tool_calls` 增量 | 内部类 `StreamedResponse` 取 `response.completed` 里的 `output` |
 | 停止原因 | `stop_reason` | `finish_reason` | `status` + `incomplete_details.reason` |
-| 结束标志 | `message_stop` | `data: [DONE]` | `response.completed` / `response.incomplete` |
+| 结束标志 | `message_stop` | `data: [DONE]` 或 `finish_reason`；两者都没有就断开 → 可重试错误 | `response.completed` / `response.incomplete`；没有就断开 → 可重试错误 |
 | 流中报错 | SDK 抛异常 | `error` 字段 | `response.failed` / `error` 事件 |
 | 缓存用量 | `cache_read_input_tokens` / `cache_creation_input_tokens` | `prompt_tokens_details.cached_tokens`，DeepSeek 用 `prompt_cache_hit_tokens` | `input_tokens_details.cached_tokens` / `cache_write_tokens` |
 
 **用量统一口径**：领域里的 `TokenUsage.inputTokens` 是**没命中缓存**的输入，缓存命中、缓存写入分开记。OpenAI 两种协议的 `input_tokens` 包含缓存部分，适配器会减掉。
+
+**流卡住**：JDK `HttpClient` 的请求超时只管到响应头到达为止，流开始之后不再生效。所以 `OpenAiHttp.readEvents` 另有一个空闲看门狗：超过 `timeout-seconds`（默认 10 分钟）没收到任何数据就关掉连接，按可重试的错误处理。Anthropic 网关由 SDK 自己的读超时负责。
+
+**重试时界面要丢弃半截回复**：失败前可能已经流出一部分文字，重试会从头重新生成这一轮。引擎会发 `retrying` 事件（输出无法解析时是一条 warning 通知），前端收到后应丢弃这条回复已经显示的部分；保存进历史的始终是成功那次的完整回复。
+
+**工具调用 ID**：结果按 ID 回填，所以 ID 不能为空、不能重复。有的兼容服务会给空 ID 或重复 ID，Chat Completions 网关遇到时换成新生成的 ID（这种协议的历史由我们自己回放，换掉不会和服务端对不上）；其他网关如果给出这样的回复，重试装饰器按"输出无法解析"处理，重发本轮。
 
 **工具参数解析失败**：模型偶尔会输出坏的 JSON。适配器不抛异常，而是生成一个带 `parseError` 的 `ToolCall`，引擎回给模型一个错误结果，模型下一轮会重写。
 
@@ -201,7 +207,7 @@ sequenceDiagram
 | `echo-reasoning` | 除 `openai` 预设外开启 | 回传历史 `reasoning_content`。DeepSeek 思考模式 + 工具调用时必须 |
 | `stream-usage` | 开启 | 请求 `stream_options.include_usage`，流的最后一块带用量 |
 
-所有适配器都支持 `extra-body`（原样并入请求体）、`headers`、`timeout-seconds`。
+所有适配器都支持 `extra-body`（原样并入请求体）、`headers`、`timeout-seconds`（OpenAI 两个网关里同时是"流多久没数据就断开重试"的上限）。
 
 ## 7. 接一个新厂商
 

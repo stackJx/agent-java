@@ -25,9 +25,17 @@
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <anthropic.version>3.4.0</anthropic.version>
+    <mcp.version>2.1.0</mcp.version>
+    <!-- JLine 4 需要 Java 22，项目是 Java 21，所以用 3.x -->
+    <jline.version>3.30.17</jline.version>
+    <jsoup.version>1.24.1</jsoup.version>
     <jackson.version>2.21.7</jackson.version>
     <junit.version>6.0.3</junit.version>
     <spring-boot.version>4.1.2</spring-boot.version>
+    <!-- 与 Spring Boot 4.1.2 的依赖管理一致；starter 里是可选依赖，应用引入 Actuator 时才生效 -->
+    <micrometer.version>1.17.2</micrometer.version>
+    <!-- 与 Spring Boot 4.1.2 自带的 Spring Framework 版本一致 -->
+    <spring-framework.version>7.0.10</spring-framework.version>
     <h2.version>2.5.252</h2.version>
     <sqlite.version>3.54.1.0</sqlite.version>
   </properties>
@@ -63,6 +71,35 @@
         <groupId>com.anthropic</groupId>
         <artifactId>anthropic-java</artifactId>
         <version>${anthropic.version}</version>
+      </dependency>
+      <dependency>
+        <!-- jsoup：web_fetch 把网页转成文字 -->
+        <groupId>org.jsoup</groupId>
+        <artifactId>jsoup</artifactId>
+        <version>${jsoup.version}</version>
+      </dependency>
+      <dependency>
+        <!-- JLine：交互式命令行的行编辑、历史记录、Tab 补全、Ctrl+C -->
+        <groupId>org.jline</groupId>
+        <artifactId>jline</artifactId>
+        <version>${jline.version}</version>
+      </dependency>
+      <dependency>
+        <!-- Spring JDBC：JDBC 存储用 JdbcClient + TransactionTemplate -->
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-jdbc</artifactId>
+        <version>${spring-framework.version}</version>
+      </dependency>
+      <dependency>
+        <!-- 官方 MCP Java SDK：mcp-core + Jackson 2 版的 JSON 模块（不用 mcp 总包，它会带进 Jackson 3） -->
+        <groupId>io.modelcontextprotocol.sdk</groupId>
+        <artifactId>mcp-core</artifactId>
+        <version>${mcp.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.modelcontextprotocol.sdk</groupId>
+        <artifactId>mcp-json-jackson2</artifactId>
+        <version>${mcp.version}</version>
       </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson</groupId>

@@ -15,7 +15,6 @@ import com.agentcore.infrastructure.persistence.jdbc.JdbcPlatform;
 import com.agentcore.infrastructure.persistence.jdbc.JdbcStore;
 import com.agentcore.spring.jdbc.AgentCoreJdbcAutoConfiguration;
 import java.nio.file.Path;
-import java.sql.ResultSet;
 import java.time.LocalDate;
 import java.util.Map;
 import java.util.UUID;
@@ -57,13 +56,8 @@ class AgentCoreJdbcAutoConfigurationTest {
                     assertThat(svc.chat(id, "你好", e -> { }).ok()).isTrue();
                     ctx.getBean(MemoryRepository.class).save(new MemoryEntry("tone", "回答要简洁", MemoryType.FEEDBACK, "x", LocalDate.now()));
 
-                    int events = store.query(c -> {
-                        try (ResultSet rs = c.createStatement().executeQuery(
-                                "SELECT COUNT(*) FROM agent_conversation_event WHERE conversation_id = '" + id + "'")) {
-                            rs.next();
-                            return rs.getInt(1);
-                        }
-                    });
+                    int events = store.jdbc().sql("SELECT COUNT(*) FROM agent_conversation_event WHERE conversation_id = ?")
+                            .param(id).query(Integer.class).single();
                     assertThat(events).isEqualTo(3); // started + 用户消息 + 助手回复
                     assertThat(svc.list(10).get(0).title()).isEqualTo("你好");
                     assertThat(svc.find(id).orElseThrow().metadata()).containsEntry("user", "u-1").containsKey("model");

@@ -144,22 +144,35 @@ final class ToolExecutor {
             }));
         }
         // 取消时中断所有还在跑的工具线程
-        Runnable unregister = scope.cancelToken().onCancel(() -> futures.forEach(future -> future.cancel(true)));
+        Runnable stopAll = () -> futures.forEach(future -> future.cancel(true));
+        Runnable unregister = scope.cancelToken().onCancel(stopAll);
+        boolean finished = false;
         try {
             for (Future<?> future : futures) {
-                try {
-                    future.get();
-                } catch (ExecutionException e) {
-                    if (e.getCause() instanceof CancelledException cancelled) {
-                        throw cancelled;
-                    }
-                    throw new IllegalStateException(e.getCause());
-                } catch (CancellationException | InterruptedException e) {
-                    throw new CancelledException();
-                }
+                waitFor(future);
             }
+            finished = true;
         } finally {
             unregister.run();
+            if (!finished) {
+                stopAll.run(); // 有一个失败了：同一批里其他还在跑的也停掉，不在后台白跑
+            }
+        }
+    }
+
+    private static void waitFor(Future<?> future) {
+        try {
+            future.get();
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof CancelledException cancelled) {
+                throw cancelled;
+            }
+            throw new IllegalStateException(e.getCause());
+        } catch (CancellationException e) {
+            throw new CancelledException();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CancelledException();
         }
     }
 
@@ -170,7 +183,7 @@ final class ToolExecutor {
         Optional<Tool> tool = tools.find(call.name());
         ToolOutput output = tool.isEmpty()
                 ? ToolOutput.error("Error: unknown tool '" + call.name() + "'. Available tools: " + String.join(", ", tools.names()))
-                : proceed(0, new ToolInvocation(call, tool.get(), contextFor(call, scope), scope::emit)); // 2～9. 拦截器链，末端是执行
+                : runChain(new ToolInvocation(call, tool.get(), contextFor(call, scope), scope::emit)); // 2～9. 拦截器链，末端是执行
 
         Map<String, Object> metadata = takeSubAgentUsage(output, tool.map(Tool::name).orElse(call.name()), scope);
         long millis = (System.nanoTime() - startedAt) / 1_000_000;
@@ -191,6 +204,22 @@ final class ToolExecutor {
             scope.conversation().recordUsage(used, "tool:" + toolName);
         }
         return metadata;
+    }
+
+    /**
+     * 走一遍拦截器链。拦截器、钩子按约定不应该抛异常；万一抛了（使用者代码的 bug），只让这一个调用失败，
+     * 错误交给模型，不让它结束整次运行。取消照常向上抛。
+     */
+    private ToolOutput runChain(ToolInvocation invocation) {
+        try {
+            return proceed(0, invocation);
+        } catch (CancelledException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "tool call " + invocation.tool().name() + " failed inside the interceptor chain", e);
+            return ToolOutput.error("Error: the tool call failed before or after execution (" + e.getClass().getSimpleName()
+                    + ": " + e.getMessage() + ")");
+        }
     }
 
     /** 拦截器链：第 index 个拦截器处理，它调用 chain.proceed 时进入下一个；走完所有拦截器后执行工具。 */

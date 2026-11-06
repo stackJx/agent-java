@@ -29,6 +29,8 @@ public final class FunctionTool implements Tool {
     private final boolean readOnly;
     private final Boolean concurrencySafe;
     private final PermissionLevel permission;
+    private final String pathArgument;
+    private final String pathWhenMissing;
     private final Duration timeout;
     private final int maxOutputChars;
     private final Handler handler;
@@ -40,6 +42,8 @@ public final class FunctionTool implements Tool {
         this.readOnly = b.readOnly;
         this.concurrencySafe = b.concurrencySafe;
         this.permission = b.permission;
+        this.pathArgument = b.pathArgument;
+        this.pathWhenMissing = b.pathWhenMissing;
         this.timeout = b.timeout;
         this.maxOutputChars = b.maxOutputChars;
         this.handler = Objects.requireNonNull(b.handler, "handler");
@@ -79,6 +83,15 @@ public final class FunctionTool implements Tool {
         return permission != null ? permission : Tool.super.defaultPermission();
     }
 
+    /** 声明了 {@link Builder#pathArgument} 时，返回那个参数的值（没传时用默认值）；否则 null。 */
+    @Override
+    public String permissionPath(Map<String, Object> arguments) {
+        if (pathArgument == null) {
+            return null;
+        }
+        return arguments.get(pathArgument) instanceof String path ? path : pathWhenMissing;
+    }
+
     @Override
     public Duration timeout() {
         return timeout;
@@ -101,6 +114,8 @@ public final class FunctionTool implements Tool {
         private boolean readOnly;
         private Boolean concurrencySafe;
         private PermissionLevel permission;
+        private String pathArgument;
+        private String pathWhenMissing;
         private Duration timeout = Duration.ofMinutes(10);
         private int maxOutputChars = 30_000;
         private Handler handler;
@@ -131,6 +146,18 @@ public final class FunctionTool implements Tool {
 
         public Builder permission(PermissionLevel p) {
             this.permission = p;
+            return this;
+        }
+
+        /** 声明哪个参数是要访问的文件路径（权限规则按路径匹配，见 {@link Tool#permissionPath}）。 */
+        public Builder pathArgument(String argumentName) {
+            return pathArgument(argumentName, null);
+        }
+
+        /** 同上；参数没传时，按 whenMissing 这个路径判定（例如搜索工具默认搜 "."，即工作目录）。 */
+        public Builder pathArgument(String argumentName, String whenMissing) {
+            this.pathArgument = argumentName;
+            this.pathWhenMissing = whenMissing;
             return this;
         }
 

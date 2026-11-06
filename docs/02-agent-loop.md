@@ -182,6 +182,9 @@ sequenceDiagram
 ```
 
 - **插话**在两个时机交给模型：工具执行完时，和工具结果一起发；或者模型已经说完了，作为一条新的用户消息继续跑。
+- **插话不会"收下了又丢掉"**：模型说完、运行准备结束时，`RunControl#takeSteeringOrClose` 在同一把锁里"有插话就取走，没有就关闭入口"；
+  关闭之后 `steer` 返回 false（HTTP 接口返回 `accepted: false`），调用方知道要把这段话作为新消息发送。
+  运行因取消、出错、到达轮数上限结束时，没处理的插话放在 `RunResult#unprocessedSteering` 里交还，并发一条 warning。
 - **取消**是协作式的：每轮开始、每批工具之间、重试等待中都会检查；正在阻塞的 HTTP 读取会被直接关闭。取消后会话依然合法，可以继续发消息。
 
 ## 7. 什么时候压缩上下文
@@ -211,7 +214,7 @@ sequenceDiagram
 | `tool_progress` | 工具上报进度 | 进度文字 |
 | `tool_finished` | 工具执行完（含失败、被拒） | 输出、是否出错、耗时 |
 | `compacted` | 完成一次压缩 | 压缩前后 token 数、摘要 |
-| `retrying` | 模型调用失败，准备重试 | 第几次、等待毫秒数、错误 |
+| `retrying` | 模型调用失败，准备重试（这一轮会从头重新生成，界面应丢弃已经显示的半截回复） | 第几次、等待毫秒数、错误 |
 | `notice` | 提示信息 | 级别（info / warning / error）、内容 |
 | `run_finished` | 运行结束 | 停止原因、最终文字、轮数、总用量、错误 |
 
@@ -235,8 +238,14 @@ $ bin/agentcore run -m mock --no-session --events "你好"
 |---|---|
 | `startConversation(metadata)` | 新建会话，记下模型、Agent 名、工作目录等元数据 |
 | `chat(id, text, listener)` | 同步执行，阻塞到运行结束 |
-| `chatAsync(id, input, listener)` | 在虚拟线程上执行，立刻返回 `RunHandle`（可取消、可插话、可等结果），Web 服务用它 |
-| `cancel(id)` / `steer(id, text)` | 找到正在运行的任务，转给它的 `RunControl` |
-| `compact(id)` | 手动压缩（运行中不允许） |
+| `chatAsync(id, input, listener[, beforeStart])` | 在虚拟线程上执行，立刻返回 `RunHandle`（可取消、可插话、可等结果），Web 服务用它。`beforeStart` 在占住会话之后、运行开始之前执行（Web 接口在这里挂审批通道） |
+| `cancel(id)` / `steer(id, text)` | 找到正在运行的任务，转给它的 `RunControl`；`steer` 返回 false 表示没收下（见第 6 节） |
+| `delete(id)` / `deleteNotUpdatedSince(cutoff)` | 删除会话（运行中拒绝）/ 按保留期限清理（跳过正在运行的） |
+| `compact(id)` | 手动压缩：同样占住会话（运行中不允许，压缩期间也不能开始运行），可以 `cancel(id)` |
 
 最重要的一条约束：**同一个会话同一时刻只能有一个运行**。第二个请求会直接报错，而不是排队，否则两个运行会同时往一段历史里写。
+`AgentService` 先占住会话、再从仓储加载，所以每次运行拿到的都是上一次运行保存之后的状态。
+
+**观察所有运行**：`AgentEngine.builder().observer(RunObserver)` 挂一个观察者，每次运行开始时它为这次运行给出一个监听器，收到这次运行的全部事件（Spring Boot 里定义 `RunObserver` 类型的 Bean 即可）。指标就是这样做的，见 [07 接入方式](07-integration.md#指标)。
+
+引擎为每个会话保留的工具状态（文件读取记录、todo 列表）最多保留 1000 个会话，更早的会被丢掉（例如写文件前要重新读一次），长期运行的服务内存不会只增不减。

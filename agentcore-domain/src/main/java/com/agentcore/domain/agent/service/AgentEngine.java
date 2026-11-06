@@ -3,6 +3,7 @@ package com.agentcore.domain.agent.service;
 import com.agentcore.domain.agent.event.AgentEvent;
 import com.agentcore.domain.agent.event.AgentEvent.Notice;
 import com.agentcore.domain.agent.event.AgentEventListener;
+import com.agentcore.domain.agent.event.RunObserver;
 import com.agentcore.domain.agent.hook.AgentHook;
 import com.agentcore.domain.agent.interceptor.ArgumentsInterceptor;
 import com.agentcore.domain.agent.interceptor.HookInterceptor;
@@ -33,6 +34,7 @@ import com.agentcore.domain.permission.gateway.Approver;
 import com.agentcore.domain.permission.service.PermissionPolicy;
 import com.agentcore.domain.shared.cancel.CancellationToken;
 import com.agentcore.domain.shared.cancel.CancelledException;
+import com.agentcore.domain.shared.util.BoundedLruCache;
 import com.agentcore.domain.tool.model.ToolRegistry;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -68,6 +70,8 @@ public final class AgentEngine {
 
     /** 请求一发出去就超窗时，压缩后重发的次数上限（整次运行累计）。 */
     private static final int MAX_OVERFLOW_COMPACTIONS = 2;
+    /** 最多为多少个会话保留工具状态；更早的会话被丢掉（例如文件读取记录没了，写文件前要重新读一次）。 */
+    private static final int MAX_CONVERSATIONS_WITH_TOOL_STATE = 1000;
 
     private static final String CUT_OFF_TOOL_CALL =
             "Error: your response was cut off before this tool call was complete, so it was not executed. "
@@ -82,6 +86,7 @@ public final class AgentEngine {
     private final Approver approver;
     private final List<AgentHook> hooks;
     private final List<ToolInterceptor> interceptors;
+    private final List<RunObserver> observers;
     private final ConversationRepository repository;
     private final ConversationCompactor compactor;
     private final Map<Class<?>, Object> services;
@@ -90,9 +95,11 @@ public final class AgentEngine {
     // ---- 由配置派生
     /** 带退避重试的模型（装饰器）。model() 仍然返回原始模型。 */
     private final ModelGateway retryingModel;
+    /** 带退避重试的摘要模型（和主模型相同时就是 retryingModel）。 */
+    private final ModelGateway retryingSummarizer;
     private final ToolExecutor toolExecutor;
-    /** 会话级工具状态（文件读取记录、todo 列表等），按会话 ID 隔离；同一会话的多次运行共用。 */
-    private final Map<String, Map<String, Object>> toolState = new ConcurrentHashMap<>();
+    /** 会话级工具状态（文件读取记录、todo 列表等），按会话 ID 隔离；同一会话的多次运行共用。有数量上限。 */
+    private final BoundedLruCache<String, Map<String, Object>> toolState = new BoundedLruCache<>(MAX_CONVERSATIONS_WITH_TOOL_STATE);
 
     private AgentEngine(Builder builder) {
         this.definition = builder.definition;
@@ -103,15 +110,20 @@ public final class AgentEngine {
         this.approver = builder.approver;
         this.hooks = List.copyOf(builder.hooks);
         this.interceptors = List.copyOf(builder.interceptors);
+        this.observers = List.copyOf(builder.observers);
         this.repository = builder.repository;
         this.compactor = builder.compactor;
         this.services = Map.copyOf(builder.services);
         this.depth = builder.depth;
 
         EngineSettings settings = definition.settings();
-        this.retryingModel = new RetryingModelGateway(model, settings.maxRetries(), settings.retryBaseDelay(),
-                settings.maxMalformedRetries());
+        this.retryingModel = withRetries(model, settings);
+        this.retryingSummarizer = summarizer == model ? retryingModel : withRetries(summarizer, settings);
         this.toolExecutor = new ToolExecutor(tools, interceptorChain(), settings, services, depth);
+    }
+
+    private static ModelGateway withRetries(ModelGateway gateway, EngineSettings settings) {
+        return new RetryingModelGateway(gateway, settings.maxRetries(), settings.retryBaseDelay(), settings.maxMalformedRetries());
     }
 
     /** 工具调用的拦截器链：参数校验 → 权限与审批 → 使用者的拦截器 → 钩子 → 截断输出 →（末端）执行。 */
@@ -139,6 +151,7 @@ public final class AgentEngine {
         builder.approver = approver;
         builder.hooks = new ArrayList<>(hooks);
         builder.interceptors = new ArrayList<>(interceptors);
+        builder.observers = new ArrayList<>(observers);
         builder.repository = repository;
         builder.compactor = compactor;
         builder.services = new LinkedHashMap<>(services);
@@ -175,6 +188,11 @@ public final class AgentEngine {
         return interceptors;
     }
 
+    /** 观察所有运行的观察者（指标等）。 */
+    public List<RunObserver> observers() {
+        return observers;
+    }
+
     public ConversationCompactor compactor() {
         return compactor;
     }
@@ -195,6 +213,11 @@ public final class AgentEngine {
 
     /** 手动压缩一个会话的上下文。 */
     public Optional<AgentEvent.Compacted> compact(Conversation conversation, AgentEventListener listener) {
+        return compact(conversation, listener, new RunControl());
+    }
+
+    /** 手动压缩，可以通过 control 取消（生成摘要可能要很久）。 */
+    public Optional<AgentEvent.Compacted> compact(Conversation conversation, AgentEventListener listener, RunControl control) {
         List<AgentEvent.Compacted> compacted = new ArrayList<>();
         Run run = new Run(conversation, event -> {
             if (event instanceof AgentEvent.Compacted c) {
@@ -203,9 +226,14 @@ public final class AgentEngine {
             if (listener != null) {
                 listener.onEvent(event);
             }
-        }, new RunControl());
+        }, control == null ? new RunControl() : control);
         run.compact();
         return compacted.stream().findFirst();
+    }
+
+    /** 会话被删除时调用：丢掉引擎为它保留的工具状态（文件读取记录、todo 列表）。 */
+    public void forgetToolState(String conversationId) {
+        toolState.remove(conversationId);
     }
 
     /** 当前上下文规模估算：有上一次请求的真实用量时以它为基线，只估算之后新增的消息。 */
@@ -239,6 +267,8 @@ public final class AgentEngine {
     private final class Run implements ToolExecutor.Scope {
         private final Conversation conversation;
         private final AgentEventListener listener;
+        /** 观察者为这次运行给出的监听器（指标等）。 */
+        private final List<AgentEventListener> observerListeners;
         private final RunControl control;
         private final EngineSettings settings = definition.settings();
         private final Object emitLock = new Object();
@@ -256,6 +286,20 @@ public final class AgentEngine {
             this.conversation = conversation;
             this.listener = listener;
             this.control = control;
+            this.observerListeners = startObservers(conversation.id().value());
+        }
+
+        /** 每个观察者为这次运行给一个监听器；某个观察者出错就跳过它。 */
+        private List<AgentEventListener> startObservers(String conversationId) {
+            List<AgentEventListener> started = new ArrayList<>();
+            for (RunObserver observer : observers) {
+                try {
+                    started.add(observer.startRun(conversationId));
+                } catch (RuntimeException e) {
+                    LOG.log(System.Logger.Level.WARNING, "run observer failed to start", e);
+                }
+            }
+            return started;
         }
 
         /** 总流程：准备 → 一轮一轮跑到结束 → 发 RunFinished。取消和出错都不往外抛，同样正常收尾。 */
@@ -275,8 +319,19 @@ public final class AgentEngine {
                 emit(Notice.error(error));
                 ending = new Ending(StopReason.ERROR, lastAnswer, error);
             }
+            List<String> unprocessedSteering = closeSteering();
             emit(new AgentEvent.RunFinished(ending.reason(), ending.text(), turn, usage, ending.error()));
-            return new RunResult(conversation.id().value(), ending.text(), ending.reason(), turn, usage, ending.error());
+            return new RunResult(conversation.id().value(), ending.text(), ending.reason(), turn, usage, ending.error(),
+                    unprocessedSteering);
+        }
+
+        /** 关闭插话入口；运行没正常结束、还有没处理的插话时，发一条警告（这些文字在 RunResult 里交还给调用方）。 */
+        private List<String> closeSteering() {
+            List<String> unprocessed = control.close();
+            if (!unprocessed.isEmpty()) {
+                emit(Notice.warning(unprocessed.size() + " steering message(s) arrived too late and were not processed"));
+            }
+            return unprocessed;
         }
 
         /** ①② 准备：清理上次运行的残局，追加用户输入。 */
@@ -333,7 +388,7 @@ public final class AgentEngine {
                 }
                 // ⑥
                 try {
-                    return retryingModel.stream(request, new StreamEventForwarder(this::emit), control.token());
+                    return retryingModel.stream(request, StreamEventForwarder.forReply(this::emit), control.token());
                 } catch (ContextOverflowException e) {
                     if (overflowCompactions++ >= MAX_OVERFLOW_COMPACTIONS) {
                         throw e;
@@ -387,9 +442,9 @@ public final class AgentEngine {
                 emit(Notice.warning("the response hit the output token limit and may be incomplete"));
                 return Optional.of(Ending.of(StopReason.MAX_TOKENS, reply.text()));
             }
-            // ⑩ 模型说完了。用户在运行中插过话：当作新的用户输入，再来一轮；否则正常结束
+            // ⑩ 模型说完了。用户在运行中插过话：当作新的用户输入，再来一轮；否则关闭插话入口，正常结束
             lastAnswer = reply.text();
-            List<ContentBlock> steering = takeSteering();
+            List<ContentBlock> steering = asTextBlocks(control.takeSteeringOrClose());
             if (!steering.isEmpty()) {
                 conversation.addUserInput(steering);
                 save();
@@ -416,7 +471,11 @@ public final class AgentEngine {
 
         /** 取走运行中用户的插话，转成文本块。 */
         private List<ContentBlock> takeSteering() {
-            return control.drainSteering().stream().<ContentBlock>map(TextBlock::new).toList();
+            return asTextBlocks(control.drainSteering());
+        }
+
+        private static List<ContentBlock> asTextBlocks(List<String> texts) {
+            return texts.stream().<ContentBlock>map(TextBlock::new).toList();
         }
 
         /** 运行异常结束时补齐工具结果；补的过程本身出错也只记日志，不掩盖原来的异常。 */
@@ -432,7 +491,7 @@ public final class AgentEngine {
 
         /**
          * 压缩上下文：旧对话 → 摘要 → 用"摘要 + 最新用户输入"替换历史。
-         * 失败只发警告、不中断运行（下一轮还会再试）；取消照常向上抛。
+         * 摘要用带重试的模型生成，可以被取消。失败只发警告、不中断运行（下一轮还会再试）；取消照常向上抛。
          */
         void compact() {
             // 决定保留什么：最后一条是普通用户输入就保留它，其余全部总结
@@ -442,7 +501,8 @@ public final class AgentEngine {
             }
             long before = estimateContextTokens(conversation);
             try {
-                ConversationCompactor.Summary summary = compactor.summarize(plan.toSummarize(), summarizer);
+                ConversationCompactor.Summary summary = compactor.summarize(plan.toSummarize(), retryingSummarizer,
+                        StreamEventForwarder.retryNoticesOnly(this::emit), control.token());
                 addUsage(summary.usage());
                 conversation.recordUsage(summary.usage(), "compaction");
                 conversation.compact(summary.text(), compactor.buildCompactedHistory(summary.text(), plan.keep()));
@@ -458,15 +518,22 @@ public final class AgentEngine {
 
         // ---- ToolExecutor.Scope：工具执行器通过这几个方法访问本次运行
 
-        /** 发事件。工具并行执行时会从多个线程调用，加锁保证监听器看到的事件不交错；监听器出错不影响运行。 */
+        /** 发事件给调用方的监听器和各个观察者。工具并行执行时会从多个线程调用，加锁保证事件不交错；监听器出错不影响运行。 */
         @Override
         public void emit(AgentEvent event) {
             synchronized (emitLock) {
-                try {
-                    listener.onEvent(event);
-                } catch (RuntimeException ex) {
-                    LOG.log(System.Logger.Level.WARNING, "event listener failed", ex);
+                deliver(listener, event);
+                for (AgentEventListener observer : observerListeners) {
+                    deliver(observer, event);
                 }
+            }
+        }
+
+        private static void deliver(AgentEventListener target, AgentEvent event) {
+            try {
+                target.onEvent(event);
+            } catch (RuntimeException ex) {
+                LOG.log(System.Logger.Level.WARNING, "event listener failed", ex);
             }
         }
 
@@ -510,6 +577,7 @@ public final class AgentEngine {
         private Approver approver;
         private List<AgentHook> hooks = new ArrayList<>();
         private List<ToolInterceptor> interceptors = new ArrayList<>();
+        private List<RunObserver> observers = new ArrayList<>();
         private ConversationRepository repository;
         private ConversationCompactor compactor = new ConversationCompactor(null);
         private Map<Class<?>, Object> services = new LinkedHashMap<>();
@@ -564,6 +632,17 @@ public final class AgentEngine {
 
         public Builder interceptors(List<ToolInterceptor> list) {
             this.interceptors = new ArrayList<>(list);
+            return this;
+        }
+
+        /** 加一个观察所有运行的观察者（指标、审计日志）。 */
+        public Builder observer(RunObserver o) {
+            this.observers.add(o);
+            return this;
+        }
+
+        public Builder observers(List<RunObserver> list) {
+            this.observers = new ArrayList<>(list);
             return this;
         }
 

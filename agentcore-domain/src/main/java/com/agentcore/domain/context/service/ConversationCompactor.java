@@ -9,8 +9,10 @@ import com.agentcore.domain.conversation.message.ToolCall;
 import com.agentcore.domain.conversation.message.ToolResult;
 import com.agentcore.domain.conversation.model.TokenUsage;
 import com.agentcore.domain.llm.gateway.ModelGateway;
+import com.agentcore.domain.llm.gateway.ModelStreamListener;
 import com.agentcore.domain.llm.model.ModelRequest;
 import com.agentcore.domain.llm.model.ModelResponse;
+import com.agentcore.domain.shared.cancel.CancellationToken;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -72,6 +74,14 @@ public final class ConversationCompactor {
     }
 
     public Summary summarize(List<Message> messages, ModelGateway gateway) {
+        return summarize(messages, gateway, ModelStreamListener.NOOP, CancellationToken.NONE);
+    }
+
+    /**
+     * 生成摘要。引擎用这个版本：传入带重试的模型、只转发重试通知的 listener、本次运行的取消令牌 ——
+     * 摘要可能要生成很久，期间用户点取消要能立刻停下。
+     */
+    public Summary summarize(List<Message> messages, ModelGateway gateway, ModelStreamListener listener, CancellationToken cancel) {
         String transcript = renderTranscript(messages, 2000, 8000);
         int budgetChars = settings.transcriptBudget() * 3;
         if (transcript.length() > budgetChars) {
@@ -83,7 +93,7 @@ public final class ConversationCompactor {
         ModelRequest req = new ModelRequest(SUMMARY_SYSTEM,
                 List.of(Message.user("<transcript>\n" + transcript + "\n</transcript>\n\n" + SUMMARY_INSTRUCTIONS)),
                 List.of(), settings.summaryMaxTokens(), Map.of());
-        ModelResponse resp = gateway.complete(req);
+        ModelResponse resp = gateway.stream(req, listener, cancel);
         String text = resp.message().text().strip();
         if (text.isEmpty()) {
             throw new IllegalStateException("compaction failed: empty summary");

@@ -18,7 +18,12 @@ public final class ConsolePrompter implements UserPrompter {
         for (int i = 0; i < options.size(); i++) {
             io.err().println("  " + (i + 1) + ". " + options.get(i));
         }
-        String input = io.readLine("> ");
+        String input;
+        try {
+            input = io.readLine("> ");
+        } catch (ConsoleIO.InterruptedInput e) {
+            return "(no answer)";
+        }
         if (input == null || input.isBlank()) {
             return "(no answer)";
         }

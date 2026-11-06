@@ -11,12 +11,15 @@ import com.agentcore.domain.conversation.model.Conversation;
 import com.agentcore.domain.conversation.model.ConversationId;
 import com.agentcore.domain.conversation.model.ConversationSummary;
 import com.agentcore.domain.conversation.repository.ConversationRepository;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * 应用服务：对外暴露的用例（开始会话、发送消息、取消、插话、压缩、查询）。
@@ -32,8 +35,9 @@ public final class AgentService {
             control.cancel();
         }
 
-        public void steer(String text) {
-            control.steer(text);
+        /** 插话；返回 false 表示没收下（运行已经结束，应该作为新消息发送）。 */
+        public boolean steer(String text) {
+            return control.steer(text);
         }
     }
 
@@ -59,12 +63,23 @@ public final class AgentService {
 
     /** 新建会话。元数据在创建时一次写全（进入 ConversationStarted 事件），调用方传入的同名键优先。 */
     public Conversation startConversation(Map<String, String> metadata) {
+        return startConversation(metadata, null);
+    }
+
+    /**
+     * 新建属于 owner 的会话（多用户部署时由接口层传入当前用户；单用户时为 null）。
+     * owner 最后写入，覆盖调用方在元数据里自己填的 owner —— 不能冒充别人建会话。
+     */
+    public Conversation startConversation(Map<String, String> metadata, String owner) {
         Map<String, String> merged = new LinkedHashMap<>();
         merged.put("model", engine.model().describe());
         merged.put("agent", engine.definition().name());
         merged.put("cwd", String.valueOf(engine.definition().settings().cwd()));
         if (metadata != null) {
             merged.putAll(metadata);
+        }
+        if (owner != null) {
+            merged.put(Conversation.OWNER, owner);
         }
         Conversation conversation = Conversation.start(ConversationId.newId(), merged);
         repository.save(conversation);
@@ -76,21 +91,37 @@ public final class AgentService {
         return chat(conversationId, List.of(new TextBlock(text)), listener, new RunControl());
     }
 
+    /** 先占住会话再加载：保证拿到的是上一次运行保存之后的最新状态。 */
     public RunResult chat(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener, RunControl control) {
-        Conversation conversation = load(conversationId);
         claim(conversationId, control);
         try {
-            return engine.run(conversation, input, listener, control);
+            return engine.run(load(conversationId), input, listener, control);
         } finally {
-            running.remove(conversationId, control);
+            release(conversationId, control);
         }
     }
 
     /** 异步执行（虚拟线程）：适合 Web 服务。 */
     public RunHandle chatAsync(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener) {
-        Conversation conversation = load(conversationId);
+        return chatAsync(conversationId, input, listener, () -> { });
+    }
+
+    /**
+     * 异步执行。beforeStart 在占住会话之后、运行开始之前执行（例如挂上这次运行的审批通道）：
+     * 会话已经在运行时直接抛 IllegalStateException，beforeStart 不会执行，不会影响正在进行的那次运行。
+     */
+    public RunHandle chatAsync(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener,
+                               Runnable beforeStart) {
         RunControl control = new RunControl();
         claim(conversationId, control);
+        Conversation conversation;
+        try {
+            conversation = load(conversationId);
+            beforeStart.run();
+        } catch (RuntimeException e) {
+            release(conversationId, control);
+            throw e;
+        }
         // 每个运行一个虚拟线程：运行大部分时间在等模型和工具，虚拟线程几乎不占资源
         CompletableFuture<RunResult> future = new CompletableFuture<>();
         Thread.ofVirtual().name("agent-run-" + conversationId).start(() -> {
@@ -99,20 +130,24 @@ public final class AgentService {
             } catch (Throwable failure) {
                 future.completeExceptionally(failure);
             } finally {
-                running.remove(conversationId, control);
+                release(conversationId, control);
             }
         });
         return new RunHandle(conversationId, control, future);
     }
 
     /**
-     * 占住会话。同一会话已有运行时直接拒绝而不是排队：
-     * 两个运行同时往一段历史里写，必然破坏工具调用的一一对应。
+     * 占住会话。同一会话已有运行（或正在手动压缩）时直接拒绝而不是排队：
+     * 两个任务同时往一段历史里写，必然破坏工具调用的一一对应。
      */
     private void claim(String conversationId, RunControl control) {
         if (running.putIfAbsent(conversationId, control) != null) {
             throw new IllegalStateException("conversation " + conversationId + " already has a running task");
         }
+    }
+
+    private void release(String conversationId, RunControl control) {
+        running.remove(conversationId, control);
     }
 
     public boolean cancel(String conversationId) {
@@ -124,20 +159,21 @@ public final class AgentService {
         return true;
     }
 
+    /** 插话；返回 false 表示没收下：没有正在运行的任务，或者运行正在收尾（应该作为新消息发送）。 */
     public boolean steer(String conversationId, String text) {
         RunControl control = running.get(conversationId);
-        if (control == null) {
-            return false;
-        }
-        control.steer(text);
-        return true;
+        return control != null && control.steer(text);
     }
 
+    /** 手动压缩。压缩期间同样占住会话（要调一次模型，可能很久），可以用 {@link #cancel} 取消。 */
     public Optional<AgentEvent.Compacted> compact(String conversationId) {
-        if (running.containsKey(conversationId)) {
-            throw new IllegalStateException("cannot compact while a task is running");
+        RunControl control = new RunControl();
+        claim(conversationId, control);
+        try {
+            return engine.compact(load(conversationId), null, control);
+        } finally {
+            release(conversationId, control);
         }
-        return engine.compact(load(conversationId), null);
     }
 
     // ------------------------------------------------------------------ 查询
@@ -152,6 +188,32 @@ public final class AgentService {
 
     public List<ConversationSummary> list(int limit) {
         return repository.list(limit);
+    }
+
+    /** 某个用户的会话；owner 为 null 时列出全部。 */
+    public List<ConversationSummary> list(int limit, String owner) {
+        return repository.list(limit, owner);
+    }
+
+    // ------------------------------------------------------------------ 删除
+
+    /** 删除会话（正在运行时拒绝），连同引擎为它保留的工具状态。返回是否真的删了。 */
+    public boolean delete(String conversationId) {
+        RunControl control = new RunControl();
+        claim(conversationId, control);
+        try {
+            boolean deleted = repository.delete(ConversationId.of(conversationId));
+            engine.forgetToolState(conversationId);
+            return deleted;
+        } finally {
+            release(conversationId, control);
+        }
+    }
+
+    /** 删除 cutoff 之前就不再更新的会话（保留期限），正在运行的除外。返回删除了几个。 */
+    public int deleteNotUpdatedSince(Instant cutoff) {
+        Set<ConversationId> runningNow = running.keySet().stream().map(ConversationId::of).collect(Collectors.toSet());
+        return repository.deleteNotUpdatedSince(cutoff, runningNow);
     }
 
     public boolean isRunning(String conversationId) {

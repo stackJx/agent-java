@@ -1,0 +1,22 @@
+# 每次推送到 main、每个 PR：编译并跑全部测试（含 H2 各兼容模式和真实 SQLite 文件的 JDBC 测试）。
+# 真实模型 API 的冒烟测试默认跳过（RealModelSmokeTest，需要 AGENTCORE_SMOKE_MODELS 和 API key）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build and test
+        run: mvn -B -ntp verify

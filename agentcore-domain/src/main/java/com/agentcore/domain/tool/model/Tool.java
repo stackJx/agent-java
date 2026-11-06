@@ -42,7 +42,17 @@ public interface Tool {
         return 30_000;
     }
 
-    /** 权限规则匹配的对象：bash 的命令、文件工具的路径、web_fetch 的 URL…… */
+    /**
+     * 这次调用要访问的文件路径（参数里的原始写法，例如 {@code src/../a.txt}）；不访问文件的工具返回 null（默认）。
+     *
+     * <p>返回非 null 时，默认权限策略按<b>路径</b>匹配规则：先把它和规则里的模式都解析成绝对路径
+     * （去掉 . 和 ..、跟随符号链接）再比较，并且对工作目录之外的路径改为询问。见 {@code RulePermissionPolicy}。
+     */
+    default String permissionPath(Map<String, Object> arguments) {
+        return null;
+    }
+
+    /** 权限规则匹配的对象（没有 {@link #permissionPath} 的工具用它）：bash 的命令、web_fetch 的 URL…… 也用于界面上的调用摘要。 */
     default String permissionSubject(Map<String, Object> arguments) {
         for (String key : new String[]{"command", "path", "file_path", "url", "pattern"}) {
             if (arguments.get(key) instanceof String s) {

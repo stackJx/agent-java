@@ -17,7 +17,7 @@ import com.agentcore.infrastructure.json.Json;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.io.IOException;
+import jakarta.servlet.http.HttpServletRequest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -26,6 +26,7 @@ import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -42,21 +43,32 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * JSON 由 agentcore 自己序列化（{@code DomainCodec}、{@code EventCodec}），不依赖应用的 Jackson 版本。
  *
  * <pre>
- * GET  {base}/health                           健康检查（配置了 token 也不需要鉴权）
- * GET  {base}/conversations                    会话列表
- * POST {base}/conversations                    新建会话
- * GET  {base}/conversations/{id}               会话详情
- * POST {base}/conversations/{id}/messages      {"text": "..."} → SSE 事件流
- * POST {base}/conversations/{id}/cancel        取消
- * POST {base}/conversations/{id}/steer         {"text": "..."} 运行中插话
- * GET  {base}/approvals?conversationId=...     等待中的审批
- * POST {base}/approvals/{requestId}            {"decision": "allow|always|deny", "message": "..."}
+ * GET    {base}/health                           健康检查（配置了 token 也不需要鉴权）
+ * GET    {base}/conversations?limit=50           会话列表（最多 200 个）
+ * POST   {base}/conversations                    新建会话
+ * GET    {base}/conversations/{id}               会话详情（图片默认不带数据，?include_images=true 才带）
+ * DELETE {base}/conversations/{id}               删除会话（运行中返回 409）
+ * POST   {base}/conversations/{id}/messages      {"text": "..."} → SSE 事件流
+ * POST   {base}/conversations/{id}/cancel        取消
+ * POST   {base}/conversations/{id}/steer         {"text": "..."} 运行中插话
+ * GET    {base}/approvals?conversationId=...     等待中的审批
+ * POST   {base}/approvals/{requestId}            {"decision": "allow|always|deny", "message": "..."}
  * </pre>
- * 配置 {@code agentcore.web.token} 后，除 health 外的请求都要带 {@code Authorization: Bearer <token>}（见 {@link BearerTokenInterceptor}）。
+ * 配置 {@code agentcore.web.token} / {@code agentcore.web.user-tokens} 后，除 health 外的请求都要带
+ * {@code Authorization: Bearer <token>}（见 {@link BearerTokenInterceptor}）；都没有配置时默认只接受本机请求（见 {@link LocalOnlyInterceptor}）。
+ *
+ * <p><b>多用户</b>：能认出用户时（用户 token 或 Spring Security，见 {@link WebCaller}），新建的会话归这个用户，
+ * 他只能看到、操作自己的会话和审批；别人的会话一律当作不存在（404）。认不出用户时可以访问所有会话。
+ *
+ * <p>收到 {@code retrying} 事件表示这一轮要从头重新生成：前端应丢弃这条回复已经显示的部分。
  */
 @RestController
 @RequestMapping("${agentcore.web.base-path:/api/agent}")
 public class AgentController {
+
+    /** 会话列表一次最多返回多少个。 */
+    static final int MAX_LIST_LIMIT = 200;
+    private static final String CONVERSATION_NOT_FOUND = "conversation not found: ";
 
     private final AgentService service;
     private final AsyncApprover approver;
@@ -73,10 +85,13 @@ public class AgentController {
         return json(HttpStatus.OK, Json.object().put("status", "ok").put("model", service.engine().model().describe()));
     }
 
+    // ------------------------------------------------------------------ 会话
+
     @GetMapping("/conversations")
-    public ResponseEntity<String> list(@RequestParam(defaultValue = "50") int limit) {
+    public ResponseEntity<String> list(@RequestParam(defaultValue = "50") int limit, HttpServletRequest request) {
+        int boundedLimit = Math.max(1, Math.min(MAX_LIST_LIMIT, limit));
         ArrayNode conversations = Json.array();
-        for (ConversationSummary summary : service.list(limit)) {
+        for (ConversationSummary summary : service.list(boundedLimit, WebCaller.userOf(request))) {
             conversations.addObject().put("id", summary.id().value()).put("title", summary.title())
                     .put("messages", summary.messageCount()).put("updated_at", String.valueOf(summary.updatedAt()))
                     .set("usage", DomainCodec.usage(summary.usage()));
@@ -85,54 +100,68 @@ public class AgentController {
     }
 
     @PostMapping("/conversations")
-    public ResponseEntity<String> create(@RequestBody(required = false) String body) {
+    public ResponseEntity<String> create(@RequestBody(required = false) String body, HttpServletRequest request) {
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("source", "web");
         Json.toMap(parse(body).path("metadata")).forEach((key, value) -> metadata.put(key, String.valueOf(value)));
-        Conversation conversation = service.startConversation(metadata);
+        Conversation conversation = service.startConversation(metadata, WebCaller.userOf(request));
         return json(HttpStatus.CREATED, Json.object().put("id", conversation.id().value()));
     }
 
     @GetMapping("/conversations/{id}")
-    public ResponseEntity<String> get(@PathVariable String id) {
-        Conversation conversation = service.find(id).orElseThrow(() -> new IllegalArgumentException("conversation not found: " + id));
+    public ResponseEntity<String> get(@PathVariable String id, @RequestParam(name = "include_images", defaultValue = "false")
+                                      boolean includeImages, HttpServletRequest request) {
+        Conversation conversation = accessibleConversation(id, request);
         ObjectNode detail = Json.object().put("id", id).put("title", conversation.title()).put("running", service.isRunning(id));
         ArrayNode messages = detail.putArray("messages");
-        conversation.messages().forEach(message -> messages.add(DomainCodec.message(message)));
+        conversation.messages().forEach(message -> {
+            ObjectNode encoded = DomainCodec.message(message);
+            messages.add(includeImages ? encoded : ImageData.omitted(encoded));
+        });
         detail.set("usage", DomainCodec.usage(conversation.usage()));
         return json(HttpStatus.OK, detail);
     }
 
+    @DeleteMapping("/conversations/{id}")
+    public ResponseEntity<String> delete(@PathVariable String id, HttpServletRequest request) {
+        accessibleConversation(id, request);
+        return json(HttpStatus.OK, Json.object().put("deleted", service.delete(id)));
+    }
+
     /**
      * 发消息，响应是一个 SSE 事件流：每个 AgentEvent 一帧，需要审批时推 approval_required。
-     * 运行在 AgentService 的虚拟线程上，请求线程立刻返回；客户端断开或超时会取消这次运行。
+     * 运行在 AgentService 的虚拟线程上，请求线程立刻返回；事件由这条连接自己的写出线程发送（见 {@link SseEventStream}）。
+     * 客户端断开、太久不读或超时都会取消这次运行。
      */
     @PostMapping(path = "/conversations/{id}/messages", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter send(@PathVariable String id, @RequestBody String body) {
+    public SseEmitter send(@PathVariable String id, @RequestBody String body, HttpServletRequest request) {
         List<ContentBlock> input = userInput(parse(body));
-        if (service.find(id).isEmpty()) {
-            throw new IllegalArgumentException("conversation not found: " + id);
-        }
+        accessibleConversation(id, request);
         SseEmitter emitter = new SseEmitter(sseTimeoutMillis);
-        // 运行期间，这个会话的审批请求都推给当前这条 SSE 连接
-        if (approver != null) {
-            approver.attach(id, (PermissionRequest request) -> send(emitter, id, "approval_required", approvalRequired(request)));
-        }
+        Runnable cancelRun = () -> service.cancel(id);
+        SseEventStream stream = new SseEventStream(emitter, cancelRun);
+        // 运行期间，这个会话的审批请求都推给当前这条 SSE 连接。
+        // 占住会话之后才挂上：会话正在运行时 chatAsync 直接返回 409，不会抢走正在运行的那次的审批通道
+        AsyncApprover.Channel channel = (PermissionRequest approval) -> stream.send("approval_required", approvalRequired(approval));
         AgentService.RunHandle handle = service.chatAsync(id, input,
-                (AgentEvent event) -> send(emitter, id, event.type(), EventCodec.encode(event)));
-        Runnable cancelIfRunning = () -> service.cancel(id);
-        emitter.onTimeout(cancelIfRunning);
-        emitter.onError(error -> cancelIfRunning.run());
+                (AgentEvent event) -> stream.send(event.type(), EventCodec.encode(event)),
+                () -> {
+                    if (approver != null) {
+                        approver.attach(id, channel);
+                    }
+                });
+        emitter.onTimeout(cancelRun);
+        emitter.onError(error -> cancelRun.run());
         handle.result().whenComplete((result, failure) -> {
             if (approver != null) {
-                approver.detach(id);
+                approver.detach(id, channel);
             }
             if (failure != null) {
-                send(emitter, id, "error", Json.object().put("error", String.valueOf(failure)));
+                stream.send("error", Json.object().put("error", String.valueOf(failure)));
             } else if (result.error() != null) {
-                send(emitter, id, "error", Json.object().put("error", result.error()));
+                stream.send("error", Json.object().put("error", result.error()));
             }
-            emitter.complete();
+            stream.complete();
         });
         return emitter;
     }
@@ -153,36 +182,69 @@ public class AgentController {
     }
 
     @PostMapping("/conversations/{id}/cancel")
-    public ResponseEntity<String> cancel(@PathVariable String id) {
+    public ResponseEntity<String> cancel(@PathVariable String id, HttpServletRequest request) {
+        accessibleConversation(id, request);
         return json(HttpStatus.OK, Json.object().put("cancelled", service.cancel(id)));
     }
 
+    /** accepted=false 表示没有正在进行的运行（或者它正在收尾）：应该把这段话作为新消息发送。 */
     @PostMapping("/conversations/{id}/steer")
-    public ResponseEntity<String> steer(@PathVariable String id, @RequestBody String body) {
+    public ResponseEntity<String> steer(@PathVariable String id, @RequestBody String body, HttpServletRequest request) {
+        accessibleConversation(id, request);
         return json(HttpStatus.OK, Json.object().put("accepted", service.steer(id, parse(body).path("text").asText(""))));
     }
 
+    // ------------------------------------------------------------------ 审批
+
     @GetMapping("/approvals")
-    public ResponseEntity<String> pendingApprovals(@RequestParam(required = false) String conversationId) {
+    public ResponseEntity<String> pendingApprovals(@RequestParam(required = false) String conversationId, HttpServletRequest request) {
         ArrayNode approvals = Json.array();
         if (approver != null) {
-            approver.pending(conversationId)
-                    .forEach(request -> approvals.add(approvalRequired(request).put("conversation_id", request.conversationId())));
+            approver.pending(conversationId).stream()
+                    .filter(pending -> isAccessible(pending.conversationId(), request))
+                    .forEach(pending -> approvals.add(approvalRequired(pending).put("conversation_id", pending.conversationId())));
         }
         return json(HttpStatus.OK, Json.object().set("approvals", approvals));
     }
 
+    /** 只能回答自己会话里的审批；别人的审批和不存在的一样返回 404。 */
     @PostMapping("/approvals/{requestId}")
-    public ResponseEntity<String> approve(@PathVariable String requestId, @RequestBody(required = false) String body) {
-        boolean resolved = approver != null && approver.resolve(requestId, approval(parse(body)));
+    public ResponseEntity<String> approve(@PathVariable String requestId, @RequestBody(required = false) String body,
+                                          HttpServletRequest request) {
+        boolean resolved = approver != null && approver.pendingRequest(requestId)
+                .filter(pending -> isAccessible(pending.conversationId(), request))
+                .map(pending -> approver.resolve(requestId, approval(parse(body))))
+                .orElse(false);
         return json(resolved ? HttpStatus.OK : HttpStatus.NOT_FOUND, Json.object().put("resolved", resolved));
+    }
+
+    // ------------------------------------------------------------------ 访问控制
+
+    /**
+     * 取出会话，并确认调用者可以访问它：认不出用户时都可以；认出了用户，只能访问 owner 是他的会话。
+     * 不存在和不属于他都报 "conversation not found"（404），不暴露别人的会话是否存在。
+     */
+    private Conversation accessibleConversation(String id, HttpServletRequest request) {
+        String user = WebCaller.userOf(request);
+        return service.find(id)
+                .filter(conversation -> user == null || user.equals(conversation.owner()))
+                .orElseThrow(() -> new IllegalArgumentException(CONVERSATION_NOT_FOUND + id));
+    }
+
+    private boolean isAccessible(String conversationId, HttpServletRequest request) {
+        try {
+            accessibleConversation(conversationId, request);
+            return true;
+        } catch (IllegalArgumentException notAccessible) {
+            return false;
+        }
     }
 
     // ------------------------------------------------------------------ 错误处理
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<String> badRequest(IllegalArgumentException e) {
-        HttpStatus status = String.valueOf(e.getMessage()).startsWith("conversation not found") ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
+        HttpStatus status = String.valueOf(e.getMessage()).startsWith(CONVERSATION_NOT_FOUND) ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
         return json(status, Json.object().put("error", e.getMessage()));
     }
 
@@ -192,14 +254,6 @@ public class AgentController {
     }
 
     // ------------------------------------------------------------------ 工具方法
-
-    private void send(SseEmitter emitter, String conversationId, String event, ObjectNode data) {
-        try {
-            emitter.send(SseEmitter.event().name(event).data(Json.write(data)));
-        } catch (IOException | IllegalStateException e) {
-            service.cancel(conversationId); // 客户端已断开：取消任务
-        }
-    }
 
     /** 审批请求 → SSE 事件 approval_required 的数据（也用于等待中审批的列表）。 */
     static ObjectNode approvalRequired(PermissionRequest request) {

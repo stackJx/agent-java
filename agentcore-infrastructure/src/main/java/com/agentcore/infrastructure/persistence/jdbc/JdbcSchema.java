@@ -4,13 +4,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.dao.DataAccessException;
 
 /**
  * 建表：读取对应平台的脚本，只创建缺失的表（不修改、不删除已有表）。
@@ -33,15 +31,8 @@ public final class JdbcSchema {
                 continue;
             }
             List<String> statements = sections.getOrDefault(table, List.of());
-            store.query(conn -> {
-                try (Statement statement = conn.createStatement()) {
-                    for (String sql : statements) {
-                        statement.execute(sql);
-                    }
-                }
-                if (!conn.getAutoCommit()) {
-                    conn.commit();
-                }
+            store.inTransaction(() -> {
+                statements.forEach(store::execute);
                 return null;
             });
             created.add(store.table(table));
@@ -63,37 +54,36 @@ public final class JdbcSchema {
 
     /** 用一条不返回数据的查询探测表是否存在（比 DatabaseMetaData 在各库间更一致）。 */
     static boolean exists(JdbcStore store, String table) {
-        try (Connection conn = store.dataSource().getConnection(); Statement statement = conn.createStatement()) {
-            statement.setMaxRows(1);
-            statement.executeQuery("SELECT 1 FROM " + store.table(table) + " WHERE 1 = 0").close();
+        try {
+            store.jdbc().sql("SELECT 1 FROM " + store.table(table) + " WHERE 1 = 0").query().listOfRows();
             return true;
-        } catch (SQLException e) {
+        } catch (DataAccessException e) {
             return false;
         }
     }
 
     /** 按 "-- table: xxx" 注释把脚本切成每张表的语句列表。 */
     static Map<String, List<String>> sections(String script) {
-        Map<String, List<String>> out = new LinkedHashMap<>();
+        Map<String, List<String>> sections = new LinkedHashMap<>();
         String current = null;
-        StringBuilder stmt = new StringBuilder();
+        StringBuilder statement = new StringBuilder();
         for (String line : script.split("\n")) {
             String trimmed = line.strip();
             if (trimmed.startsWith("-- table:")) {
                 current = trimmed.substring("-- table:".length()).strip();
-                out.put(current, new ArrayList<>());
+                sections.put(current, new ArrayList<>());
                 continue;
             }
             if (trimmed.startsWith("--") || trimmed.isEmpty() || current == null) {
                 continue;
             }
-            stmt.append(line).append('\n');
+            statement.append(line).append('\n');
             if (trimmed.endsWith(";")) {
-                String sql = stmt.toString().strip();
-                out.get(current).add(sql.substring(0, sql.length() - 1).strip());
-                stmt.setLength(0);
+                String sql = statement.toString().strip();
+                sections.get(current).add(sql.substring(0, sql.length() - 1).strip());
+                statement.setLength(0);
             }
         }
-        return out;
+        return sections;
     }
 }

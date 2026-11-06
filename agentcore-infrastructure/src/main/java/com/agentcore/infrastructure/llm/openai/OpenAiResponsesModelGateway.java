@@ -120,7 +120,7 @@ public final class OpenAiResponsesModelGateway implements ModelGateway {
         InputStream body = OpenAiHttp.post(http, endpoint, Json.write(buildBody(request)), options.apiKey(), options.headers(),
                 options.timeout());
         StreamedResponse streamed = new StreamedResponse(listener);
-        OpenAiHttp.readEvents(body, cancel, streamed::accept);
+        OpenAiHttp.readEvents(body, cancel, options.timeout(), streamed::accept);
         if (streamed.result == null) {
             throw new ModelException("stream ended before response.completed", true);
         }

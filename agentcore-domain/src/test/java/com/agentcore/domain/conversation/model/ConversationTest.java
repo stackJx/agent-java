@@ -46,14 +46,14 @@ class ConversationTest {
     @Test
     void repairsDanglingToolCallsAndReplaysFromEvents() {
         Conversation c = Conversation.start();
-        List<DomainEvent> log = new ArrayList<>(c.pullEvents());
+        List<DomainEvent> log = new ArrayList<>(takeSavedEvents(c));
         c.addUserInput(List.of(new TextBlock("任务")));
         c.addAssistantReply(assistantCalling(ToolCall.of("x", "bash", Map.of("command", "ls"))), TokenUsage.of(100, 20));
         assertTrue(c.repairDanglingToolCalls("interrupted"));
         assertTrue(c.messages().get(2).toolResults().get(0).isError());
         c.recordUsage(TokenUsage.of(7, 3), "compaction");
         c.putMetadata("channel", "web");
-        log.addAll(c.pullEvents());
+        log.addAll(takeSavedEvents(c));
 
         assertInstanceOf(ConversationStarted.class, log.get(0));
         Conversation replayed = Conversation.replay(log);
@@ -75,5 +75,25 @@ class ConversationTest {
         assertEquals(1, c.size());
         assertEquals(1, c.compactions());
         assertNull(c.contextSnapshot());
+    }
+
+    @Test
+    void pendingEventsStayUntilMarkedSaved() {
+        Conversation c = Conversation.start();
+        List<DomainEvent> firstAttempt = c.pendingEvents();
+        // 第一次保存失败：没有调用 markEventsSaved，事件留着
+        c.addUserInput(List.of(new TextBlock("任务")));
+        List<DomainEvent> secondAttempt = c.pendingEvents();
+        assertEquals(firstAttempt.size() + 1, secondAttempt.size(), "失败的那批事件和新事件都在");
+        c.markEventsSaved(secondAttempt);
+        assertTrue(c.pendingEvents().isEmpty());
+        assertThrows(IllegalStateException.class, () -> c.markEventsSaved(secondAttempt));
+    }
+
+    /** 模拟一次成功的保存：取出待保存事件并标记为已保存。 */
+    private static List<DomainEvent> takeSavedEvents(Conversation conversation) {
+        List<DomainEvent> events = conversation.pendingEvents();
+        conversation.markEventsSaved(events);
+        return events;
     }
 }

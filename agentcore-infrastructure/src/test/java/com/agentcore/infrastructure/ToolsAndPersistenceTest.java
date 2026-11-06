@@ -7,6 +7,8 @@ import com.agentcore.domain.conversation.message.Message;
 import com.agentcore.domain.conversation.message.TextBlock;
 import com.agentcore.domain.conversation.message.ToolCall;
 import com.agentcore.domain.conversation.model.Conversation;
+import com.agentcore.domain.conversation.model.ConversationId;
+import com.agentcore.domain.conversation.model.ConversationSummary;
 import com.agentcore.domain.conversation.model.TokenUsage;
 import com.agentcore.domain.memory.model.MemoryEntry;
 import com.agentcore.domain.memory.model.MemoryType;
@@ -27,11 +29,13 @@ import com.agentcore.infrastructure.tool.builtin.WebTools;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -137,6 +141,68 @@ class ToolsAndPersistenceTest {
         assertEquals("你好", fresh.list(10).get(0).title());
         assertEquals(c.id(), fresh.findLatest().orElseThrow().id());
         assertEquals(1, loaded.pendingToolCalls().size()); // 引擎下次运行时会补上「已中断」结果
+    }
+
+    @Test
+    void jsonlFailedSaveKeepsEventsAndRetriesThem() throws Exception {
+        Path root = dir.resolve("sessions");
+        Files.writeString(root, "not a directory"); // 让第一次保存失败（模拟磁盘满、权限不足）
+        JsonlConversationRepository repo = new JsonlConversationRepository(root);
+        Conversation c = Conversation.start();
+        c.addUserInput(List.of(new TextBlock("任务")));
+        c.addAssistantReply(Message.assistant(List.of(ToolCall.of("t1", "bash", Map.of("command", "ls"))), null), TokenUsage.of(10, 2));
+        assertThrows(RuntimeException.class, () -> repo.save(c));
+        assertFalse(c.pendingEvents().isEmpty(), "写失败的事件还在聚合里");
+
+        Files.delete(root);
+        c.repairDanglingToolCalls("Error: the run failed");
+        repo.save(c); // 补写上次失败的事件 + 新事件
+        assertTrue(c.pendingEvents().isEmpty());
+
+        Conversation loaded = new JsonlConversationRepository(root).findById(c.id()).orElseThrow();
+        assertEquals(c.messages(), loaded.messages(), "工具调用和它的结果都在，历史完整");
+    }
+
+    @Test
+    void jsonlAppendAfterPartialLineDoesNotCorruptTheNextEvent() throws Exception {
+        Path root = dir.resolve("sessions");
+        JsonlConversationRepository repo = new JsonlConversationRepository(root);
+        Conversation c = Conversation.start();
+        c.addUserInput(List.of(new TextBlock("一")));
+        repo.save(c);
+        Path file = root.resolve(c.id().value() + ".jsonl");
+        Files.writeString(file, Files.readString(file) + "{\"t\":\"msg\",\"m\":{\"ro"); // 上次写到一半
+        c.addAssistantReply(Message.assistant("二"), TokenUsage.of(1, 1));
+        repo.save(c);
+
+        Conversation loaded = new JsonlConversationRepository(root).findById(c.id()).orElseThrow();
+        assertEquals(2, loaded.size(), "新事件没有接在半行后面");
+        assertEquals("二", loaded.messages().get(1).text());
+    }
+
+    @Test
+    void jsonlFiltersByOwnerDeletesAndExpires() throws Exception {
+        Path root = dir.resolve("sessions");
+        JsonlConversationRepository repo = new JsonlConversationRepository(root);
+        Conversation alice = Conversation.start(ConversationId.newId(), Map.of(Conversation.OWNER, "alice"));
+        Conversation bob = Conversation.start(ConversationId.newId(), Map.of(Conversation.OWNER, "bob"));
+        Conversation old = Conversation.start();
+        List.of(alice, bob, old).forEach(repo::save);
+
+        assertEquals(List.of(alice.id()), repo.list(10, "alice").stream().map(ConversationSummary::id).toList());
+        assertEquals(3, repo.list(10).size());
+
+        Path oldFile = root.resolve(old.id().value() + ".jsonl");
+        Files.setLastModifiedTime(oldFile, FileTime.from(Instant.now().minus(Duration.ofDays(40))));
+        Files.writeString(root.resolve("not a conversation.jsonl"), "{}"); // 目录里混进来的文件不影响清理
+        Files.setLastModifiedTime(root.resolve("not a conversation.jsonl"), FileTime.from(Instant.EPOCH));
+        assertEquals(1, repo.deleteNotUpdatedSince(Instant.now().minus(Duration.ofDays(30)), Set.of()));
+        assertFalse(Files.exists(oldFile));
+        assertTrue(repo.findById(old.id()).isEmpty());
+
+        assertTrue(repo.delete(bob.id()));
+        assertFalse(repo.delete(bob.id()), "已经删了");
+        assertTrue(new JsonlConversationRepository(root).findById(bob.id()).isEmpty());
     }
 
     @Test

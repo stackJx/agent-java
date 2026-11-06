@@ -10,6 +10,7 @@ import com.agentcore.domain.agent.hook.AgentHook;
 import com.agentcore.domain.agent.interceptor.ToolInterceptor;
 import com.agentcore.domain.agent.model.AgentDefinition;
 import com.agentcore.domain.agent.model.EngineSettings;
+import com.agentcore.domain.agent.event.RunObserver;
 import com.agentcore.domain.agent.service.AgentEngine;
 import com.agentcore.domain.context.model.CompactionSettings;
 import com.agentcore.domain.context.service.ConversationCompactor;
@@ -153,7 +154,8 @@ public class AgentCoreAutoConfiguration {
     public ToolRegistry agentToolRegistry(AgentCoreProperties props, ObjectProvider<MemoryRepository> memory, SkillCatalog skills,
                                           McpServerManager mcp, ObjectProvider<TaskTool> taskTool) {
         ToolRegistry registry = new ToolRegistry();
-        registry.registerAll(BuiltinTools.select(props.getTools()));
+        registry.registerAll(BuiltinTools.select(props.getTools(),
+                new BuiltinTools.Options(props.getWebFetch().isAllowPrivateNetwork())));
         memory.ifAvailable(repository -> registry.registerAll(MemoryTools.create(repository)));
         if (!skills.list().isEmpty()) {
             registry.register(SkillTool.create(skills));
@@ -178,7 +180,8 @@ public class AgentCoreAutoConfiguration {
                                    McpServerManager mcp, ObjectProvider<Approver> approver, ObjectProvider<UserPrompter> prompter,
                                    ObjectProvider<AgentHook> hooks, ObjectProvider<ToolInterceptor> interceptors,
                                    ObjectProvider<TaskTool> taskTool,
-                                   ObjectProvider<AgentSummarizer> summarizer) {
+                                   ObjectProvider<AgentSummarizer> summarizer,
+                                   ObjectProvider<RunObserver> observers) {
         AgentCoreProperties.Agent agent = props.getAgent();
         SystemPromptBuilder prompt = new SystemPromptBuilder()
                 .name(agent.getName())
@@ -198,6 +201,7 @@ public class AgentCoreAutoConfiguration {
                 .approver(approver.getIfAvailable())
                 .hooks(hooks.orderedStream().toList())
                 .interceptors(interceptors.orderedStream().toList())
+                .observers(observers.orderedStream().toList())
                 .repository(repository)
                 .compactor(compactor(props.getContext()));
         summarizer.ifAvailable(separate -> builder.summarizer(separate.gateway()));
@@ -211,6 +215,13 @@ public class AgentCoreAutoConfiguration {
     @ConditionalOnMissingBean
     public AgentService agentService(AgentEngine engine, ConversationRepository repository) {
         return new AgentService(engine, repository);
+    }
+
+    /** 设置了 agentcore.sessions.retention 时，定期删除超过期限没有更新的会话。 */
+    @Bean
+    @ConditionalOnProperty(name = "agentcore.sessions.retention")
+    public ConversationRetention agentConversationRetention(AgentService service, AgentCoreProperties props) {
+        return new ConversationRetention(service, props.getSessions().getRetention());
     }
 
     /** 重试相关的几项不对外暴露配置，用固定值：最多重试 3 次、首次等 2 秒、输出无法解析时重发 2 次。 */

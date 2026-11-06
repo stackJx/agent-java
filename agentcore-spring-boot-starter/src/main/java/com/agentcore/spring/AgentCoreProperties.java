@@ -38,6 +38,8 @@ public class AgentCoreProperties {
     /** 启用的内置工具（read_file、bash、task …）；不设置表示全部。 */
     private List<String> tools;
 
+    private final WebFetch webFetch = new WebFetch();
+
     private final Permissions permissions = new Permissions();
 
     /** MCP 服务器，key 为服务器名；工具名为 mcp__&lt;服务器名&gt;__&lt;工具名&gt;。 */
@@ -260,6 +262,14 @@ public class AgentCoreProperties {
         public void setAsk(List<String> ask) { this.ask = ask; }
     }
 
+    public static class WebFetch {
+        /** 允许 web_fetch 访问本机、内网、链路本地地址（默认不允许，防止被用来探测内网或读取云主机元数据）。 */
+        private boolean allowPrivateNetwork;
+
+        public boolean isAllowPrivateNetwork() { return allowPrivateNetwork; }
+        public void setAllowPrivateNetwork(boolean allowPrivateNetwork) { this.allowPrivateNetwork = allowPrivateNetwork; }
+    }
+
     public static class McpServer {
         /** stdio：命令。 */
         private String command;
@@ -274,6 +284,8 @@ public class AgentCoreProperties {
         /** 只暴露这些工具（不设置表示全部）。 */
         private List<String> tools;
         private boolean enabled = true;
+        /** 信任服务器给工具标的 readOnlyHint：标了只读的工具免审批。默认不信任（只用于决定能否并行）。 */
+        private boolean trustAnnotations;
 
         Map<String, Object> toConfig() {
             Map<String, Object> config = new LinkedHashMap<>();
@@ -295,6 +307,7 @@ public class AgentCoreProperties {
                 config.put("tools", tools);
             }
             config.put("enabled", enabled);
+            config.put("trust_annotations", trustAnnotations);
             return config;
         }
 
@@ -318,6 +331,8 @@ public class AgentCoreProperties {
         public void setTools(List<String> tools) { this.tools = tools; }
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public boolean isTrustAnnotations() { return trustAnnotations; }
+        public void setTrustAnnotations(boolean trustAnnotations) { this.trustAnnotations = trustAnnotations; }
     }
 
     public static class SubAgent {
@@ -368,11 +383,15 @@ public class AgentCoreProperties {
         /** 关闭时会话只保存在内存里。自定义 ConversationRepository Bean（例如数据库实现）会替换默认的 JSONL 存储。 */
         private boolean enabled = true;
         private String dir = HOME + "/sessions";
+        /** 保留期限，例如 30d：超过这么久没有更新的会话会被自动删除（正在运行的除外）。不设置表示永久保留。 */
+        private Duration retention;
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public String getDir() { return dir; }
         public void setDir(String dir) { this.dir = dir; }
+        public Duration getRetention() { return retention; }
+        public void setRetention(Duration retention) { this.retention = retention; }
     }
 
     public static class Context {
@@ -402,6 +421,17 @@ public class AgentCoreProperties {
         private Duration sseTimeout = Duration.ZERO;
         /** 设置后，除 health 外的接口都要带 Authorization: Bearer &lt;token&gt;（已接入 Spring Security 的应用不需要）。 */
         private String token;
+        /**
+         * 没有配置 token 时，只接受本机发来的请求（检查来源地址、Host 头和 Origin 头），
+         * 防止别的机器直接调用，也防止网页通过跨站请求或 DNS rebinding 借道调用。
+         * 应用已经接入 Spring Security 等统一认证、需要远程访问时设为 false。
+         */
+        private boolean localOnly = true;
+        /**
+         * 多用户：用户名 → 这个用户的 token。用某个用户的 token 访问时，只能看到、操作这个用户自己的会话和审批。
+         * 可以和 {@link #token}（共享 token，能访问所有会话）同时配置。
+         */
+        private Map<String, String> userTokens = new LinkedHashMap<>();
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -413,6 +443,10 @@ public class AgentCoreProperties {
         public void setSseTimeout(Duration sseTimeout) { this.sseTimeout = sseTimeout; }
         public String getToken() { return token; }
         public void setToken(String token) { this.token = token; }
+        public boolean isLocalOnly() { return localOnly; }
+        public void setLocalOnly(boolean localOnly) { this.localOnly = localOnly; }
+        public Map<String, String> getUserTokens() { return userTokens; }
+        public void setUserTokens(Map<String, String> userTokens) { this.userTokens = userTokens; }
     }
 
     // ------------------------------------------------------------------ 便捷转换
@@ -441,6 +475,7 @@ public class AgentCoreProperties {
     public Agent getAgent() { return agent; }
     public List<String> getTools() { return tools; }
     public void setTools(List<String> tools) { this.tools = tools; }
+    public WebFetch getWebFetch() { return webFetch; }
     public Permissions getPermissions() { return permissions; }
     public Map<String, McpServer> getMcpServers() { return mcpServers; }
     public void setMcpServers(Map<String, McpServer> mcpServers) { this.mcpServers = mcpServers; }

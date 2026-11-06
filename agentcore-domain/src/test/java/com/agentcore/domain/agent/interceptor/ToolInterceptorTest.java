@@ -6,10 +6,13 @@ import com.agentcore.domain.agent.event.AgentEvent;
 import com.agentcore.domain.agent.hook.AgentHook;
 import com.agentcore.domain.agent.hook.HookDecision;
 import com.agentcore.domain.conversation.message.ToolCall;
+import com.agentcore.domain.permission.gateway.Approver;
 import com.agentcore.domain.permission.model.Approval;
+import com.agentcore.domain.permission.model.PermissionRequest;
 import com.agentcore.domain.permission.service.PermissionPolicy;
 import com.agentcore.domain.permission.service.RulePermissionPolicy;
 import com.agentcore.domain.shared.cancel.CancellationToken;
+import com.agentcore.domain.shared.cancel.CancelledException;
 import com.agentcore.domain.tool.model.FunctionTool;
 import com.agentcore.domain.tool.model.Tool;
 import com.agentcore.domain.tool.model.ToolContext;
@@ -19,7 +22,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
@@ -35,8 +41,12 @@ class ToolInterceptorTest {
     final AtomicReference<Map<String, Object>> reached = new AtomicReference<>();
 
     ToolInvocation invocation(ToolCall call) {
-        ToolContext ctx = new ToolContext(Path.of("."), "conv-1", call.id(), new ConcurrentHashMap<>(), m -> { },
-                new CancellationToken(), Map.of(), 0);
+        return invocation(call, "conv-1", new CancellationToken());
+    }
+
+    ToolInvocation invocation(ToolCall call, String conversationId, CancellationToken cancel) {
+        ToolContext ctx = new ToolContext(Path.of("."), conversationId, call.id(), new ConcurrentHashMap<>(), m -> { },
+                cancel, Map.of(), 0);
         return new ToolInvocation(call, WRITE, ctx, events::add);
     }
 
@@ -83,6 +93,70 @@ class ToolInterceptorTest {
         assertEquals("ok", approve.intercept(invocation(call), terminal(ToolOutput.text("ok"))).text());
         assertNotNull(reached.get());
         assertTrue(events.stream().anyMatch(e -> e instanceof AgentEvent.PermissionDecided d && d.decision().equals("allow")));
+    }
+
+    @Test
+    void approvalsInDifferentConversationsDoNotWaitForEachOther() throws Exception {
+        CountDownLatch conversationAIsWaiting = new CountDownLatch(1);
+        CountDownLatch releaseConversationA = new CountDownLatch(1);
+        Approver approver = request -> {
+            if (request.conversationId().equals("conv-A")) {
+                conversationAIsWaiting.countDown();
+                try {
+                    releaseConversationA.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return Approval.allow();
+        };
+        PermissionInterceptor interceptor = new PermissionInterceptor(PermissionPolicy.defaults(), approver);
+        ToolCall call = ToolCall.of("c1", "write_thing", Map.of("name", "a"));
+        CompletableFuture<ToolOutput> inA = CompletableFuture.supplyAsync(() ->
+                interceptor.intercept(invocation(call, "conv-A", new CancellationToken()), terminal(ToolOutput.text("A done"))));
+        assertTrue(conversationAIsWaiting.await(5, TimeUnit.SECONDS));
+
+        // 会话 A 还在等用户审批，会话 B 的审批不用排在它后面
+        CompletableFuture<ToolOutput> inB = CompletableFuture.supplyAsync(() ->
+                interceptor.intercept(invocation(call, "conv-B", new CancellationToken()), terminal(ToolOutput.text("B done"))));
+        assertEquals("B done", inB.get(5, TimeUnit.SECONDS).text());
+        releaseConversationA.countDown();
+        assertEquals("A done", inA.get(5, TimeUnit.SECONDS).text());
+    }
+
+    @Test
+    void cancellingTheRunEndsTheApprovalWait() throws Exception {
+        CountDownLatch asked = new CountDownLatch(1);
+        Approver waitsUntilCancelled = new Approver() {
+            @Override
+            public Approval approve(PermissionRequest request) {
+                throw new AssertionError("the engine should call the cancellable version");
+            }
+
+            @Override
+            public Approval approve(PermissionRequest request, CancellationToken cancel) {
+                CountDownLatch cancelled = new CountDownLatch(1);
+                Runnable unregister = cancel.onCancel(cancelled::countDown);
+                asked.countDown();
+                try {
+                    cancelled.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    unregister.run();
+                }
+                return Approval.allow(); // 取消之后无论返回什么，都不能被当作允许
+            }
+        };
+        PermissionInterceptor interceptor = new PermissionInterceptor(PermissionPolicy.defaults(), waitsUntilCancelled);
+        CancellationToken cancel = new CancellationToken();
+        CompletableFuture<ToolOutput> pending = CompletableFuture.supplyAsync(() -> interceptor.intercept(
+                invocation(ToolCall.of("c1", "write_thing", Map.of("name", "a")), "conv-1", cancel), terminal(ToolOutput.text("ran"))));
+        assertTrue(asked.await(5, TimeUnit.SECONDS));
+        cancel.cancel();
+        Exception failure = assertThrows(Exception.class, () -> pending.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(CancelledException.class, failure.getCause());
+        assertNull(reached.get(), "取消后工具不会执行");
     }
 
     @Test

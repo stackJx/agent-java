@@ -9,11 +9,9 @@ import com.agentcore.domain.tool.model.ToolContext;
 import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.domain.tool.schema.Schemas;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -29,6 +27,8 @@ import java.util.stream.Stream;
  *
  * <p>安全约束在代码里强制执行，而不只靠提示词：
  * 覆盖或编辑已有文件前必须先 read_file；文件读取后被外部修改过（mtime 变化）则拒绝写入。
+ * 三个工具都声明了路径参数（{@code pathArgument("path")}）：权限规则按解析后的绝对路径匹配，
+ * read_file 读工作目录之外的文件（例如 ~/.ssh、配置文件里的密钥）默认要询问。
  */
 public final class FileTools {
 
@@ -90,6 +90,7 @@ public final class FileTools {
                         .integer("limit", "Maximum number of lines to return (default 2000).", false)
                         .build())
                 .readOnly(true)
+                .pathArgument("path")
                 .handler(FileTools::read)
                 .build();
     }
@@ -136,47 +137,54 @@ public final class FileTools {
                 false, Map.of("path", file.toString()));
     }
 
-    /** 文本：带行号（与 cat -n 相同的格式），从 offset 行开始最多 limit 行；没读完时提示下一次的 offset。 */
+    /**
+     * 文本：带行号（与 cat -n 相同的格式），从 offset 行开始最多 limit 行；没读完时提示下一次的 offset。
+     * 逐行读，不把整个文件读进内存；单行超过 {@value #MAX_LINE_CHARS} 个字符的部分不显示。
+     */
     private static ToolOutput readText(Path file, int offset, int limit, ToolContext ctx) throws IOException {
-        byte[] raw = Files.readAllBytes(file);
-        if (looksBinary(raw)) {
+        if (looksBinary(firstBytes(file))) {
             throw new ToolException(file + " looks like a binary file; refusing to print it.");
         }
-        List<String> lines = decodeLenient(raw).lines().toList();
+        StringBuilder numbered = new StringBuilder();
+        int lineCount = 0;
+        try (CappedLineReader reader = new CappedLineReader(Files.newInputStream(file), MAX_LINE_CHARS)) {
+            CappedLineReader.Line line;
+            while ((line = reader.next()) != null) {
+                lineCount++;
+                if (lineCount >= offset && lineCount < offset + limit) {
+                    String shown = line.truncated() ? line.text() + " …[line truncated]" : line.text();
+                    numbered.append(String.format("%6d\t%s%n", lineCount, shown));
+                }
+            }
+        }
         markRead(file, ctx);
-        if (lines.isEmpty()) {
+        if (lineCount == 0) {
             return ToolOutput.text("(file " + file + " is empty)");
         }
-        int end = Math.min(lines.size(), offset - 1 + limit);
-        StringBuilder numbered = new StringBuilder();
-        for (int i = offset - 1; i < end; i++) {
-            String line = lines.get(i);
-            if (line.length() > MAX_LINE_CHARS) {
-                line = line.substring(0, MAX_LINE_CHARS) + " …[line truncated]";
-            }
-            numbered.append(String.format("%6d\t%s%n", i + 1, line));
+        if (offset > lineCount) {
+            return ToolOutput.text("(file " + file + " has " + lineCount + " lines; offset " + offset + " is past the end)");
         }
-        if (end < lines.size()) {
-            numbered.append("... (").append(lines.size() - end).append(" more lines; use offset=").append(end + 1).append(" to continue)");
+        int end = Math.min(lineCount, offset - 1 + limit);
+        if (end < lineCount) {
+            numbered.append("... (").append(lineCount - end).append(" more lines; use offset=").append(end + 1).append(" to continue)");
         }
-        return ToolOutput.text(numbered.toString().stripTrailing(), Map.of("path", file.toString(), "lines", lines.size()));
+        return ToolOutput.text(numbered.toString().stripTrailing(), Map.of("path", file.toString(), "lines", lineCount));
     }
 
-    private static boolean looksBinary(byte[] raw) {
-        for (int i = 0; i < Math.min(raw.length, BINARY_SNIFF_BYTES); i++) {
-            if (raw[i] == 0) {
+    /** 文件开头的一小段，用来判断是不是二进制文件。 */
+    static byte[] firstBytes(Path file) throws IOException {
+        try (InputStream in = Files.newInputStream(file)) {
+            return in.readNBytes(BINARY_SNIFF_BYTES);
+        }
+    }
+
+    static boolean looksBinary(byte[] raw) {
+        for (byte value : raw) {
+            if (value == 0) {
                 return true;
             }
         }
         return false;
-    }
-
-    /** 按 UTF-8 解码，非法字节替换成 �，不报错。 */
-    private static String decodeLenient(byte[] raw) throws CharacterCodingException {
-        return StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPLACE)
-                .onUnmappableCharacter(CodingErrorAction.REPLACE)
-                .decode(ByteBuffer.wrap(raw)).toString();
     }
 
     private static String extension(Path file) {
@@ -193,6 +201,7 @@ public final class FileTools {
                         .string("path", "File path, absolute or relative to the working directory.", true)
                         .string("content", "The full content to write.", true)
                         .build())
+                .pathArgument("path")
                 .handler(FileTools::write)
                 .build();
     }
@@ -220,6 +229,7 @@ public final class FileTools {
                         .string("new_string", "Replacement text.", true)
                         .bool("replace_all", "Replace every occurrence instead of requiring a unique match.", false)
                         .build())
+                .pathArgument("path")
                 .handler(FileTools::edit)
                 .build();
     }
@@ -233,10 +243,14 @@ public final class FileTools {
         String oldString = (String) args.get("old_string");
         String newString = (String) args.get("new_string");
         boolean replaceAll = ToolArgs.flag(args, "replace_all");
+        if (oldString.isEmpty()) {
+            throw new ToolException("old_string must not be empty. Include some existing text next to where the new text goes "
+                    + "(and repeat it in new_string), or use write_file to create a new file.");
+        }
         if (oldString.equals(newString)) {
             throw new ToolException("old_string and new_string are identical; nothing to do.");
         }
-        String text = Files.readString(file);
+        String text = readUtf8ForEditing(file);
         int count = countOccurrences(text, oldString);
         if (count == 0) {
             throw new ToolException("old_string was not found in the file. Re-read the file and copy the text exactly.");
@@ -253,7 +267,21 @@ public final class FileTools {
         return ToolOutput.text("Edited " + file + ": replaced " + (replaceAll ? count : 1) + " occurrence(s) starting at line " + line + ".");
     }
 
+    /** 按严格的 UTF-8 读：非法字节不能替换成 � 再写回去，否则会悄悄损坏 GBK 等其他编码的文件。 */
+    private static String readUtf8ForEditing(Path file) throws IOException {
+        try {
+            return Files.readString(file);
+        } catch (CharacterCodingException e) {
+            throw new ToolException(file + " is not valid UTF-8 text (it may use another encoding such as GBK). "
+                    + "edit_file only edits UTF-8 files; use bash (for example iconv or sed) instead.");
+        }
+    }
+
+    /** part 在 text 里出现的次数（不重叠）。part 不能为空，否则永远找得到、死循环。 */
     private static int countOccurrences(String text, String part) {
+        if (part.isEmpty()) {
+            throw new IllegalArgumentException("part must not be empty");
+        }
         int count = 0;
         int from = 0;
         while ((from = text.indexOf(part, from)) >= 0) {

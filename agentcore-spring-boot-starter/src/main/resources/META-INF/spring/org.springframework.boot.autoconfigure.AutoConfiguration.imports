@@ -1,3 +1,4 @@
 com.agentcore.spring.jdbc.AgentCoreJdbcAutoConfiguration
 com.agentcore.spring.AgentCoreAutoConfiguration
 com.agentcore.spring.web.AgentCoreWebAutoConfiguration
+com.agentcore.spring.metrics.AgentCoreMetricsAutoConfiguration

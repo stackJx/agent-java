@@ -4,6 +4,7 @@ import static com.agentcore.domain.testsupport.FakeModel.reply;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.agentcore.domain.conversation.message.Message;
+import com.agentcore.domain.conversation.message.ToolCall;
 import com.agentcore.domain.llm.exception.ContextOverflowException;
 import com.agentcore.domain.llm.exception.MalformedOutputException;
 import com.agentcore.domain.llm.exception.ModelException;
@@ -14,6 +15,7 @@ import com.agentcore.domain.testsupport.FakeModel;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class RetryingModelGatewayTest {
@@ -81,5 +83,31 @@ class RetryingModelGatewayTest {
         long t0 = System.currentTimeMillis();
         assertThrows(CancelledException.class, () -> slow.stream(REQ, ModelStreamListener.NOOP, cancel));
         assertTrue(System.currentTimeMillis() - t0 < 5_000, "等待重试期间被取消，不会等满 30 秒");
+    }
+
+    @Test
+    void retryDelayIsCappedAndFollowsRetryAfter() {
+        RetryingModelGateway gateway = new RetryingModelGateway(new FakeModel(), 100, Duration.ofSeconds(1), 1);
+        ModelException plain = new ModelException("overloaded", true);
+        long jitter = 1000;
+        assertTrue(gateway.retryDelayMillis(0, plain) < 1000 + jitter);
+        assertTrue(gateway.retryDelayMillis(70, plain) <= RetryingModelGateway.MAX_BACKOFF_SECONDS * 1000 + jitter,
+                "重试次数再多也不超过上限，也不会因为移位溢出变成负数");
+        assertTrue(gateway.retryDelayMillis(70, plain) > 0);
+
+        ModelException withRetryAfter = new ModelException("rate limited", true, 429, null, Duration.ofSeconds(7));
+        assertEquals(7000, gateway.retryDelayMillis(0, withRetryAfter), "服务端给了 Retry-After 就按它等");
+        ModelException absurd = new ModelException("rate limited", true, 429, null, Duration.ofHours(3));
+        assertEquals(RetryingModelGateway.MAX_RETRY_AFTER_SECONDS * 1000, gateway.retryDelayMillis(0, absurd));
+    }
+
+    @Test
+    void duplicateOrBlankToolCallIdsAreRetriedAsMalformedOutput() {
+        ToolCall first = ToolCall.of("same-id", "read", Map.of("path", "a"));
+        ToolCall second = ToolCall.of("same-id", "read", Map.of("path", "b"));
+        FakeModel m = new FakeModel().then(reply("", first, second)).then(reply("ok"));
+        Recorder recorder = new Recorder();
+        assertEquals("ok", retrying(m).stream(REQ, recorder, new CancellationToken()).message().text());
+        assertTrue(recorder.calls.get(0).startsWith("malformed:tool call id"), String.valueOf(recorder.calls));
     }
 }

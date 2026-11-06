@@ -6,19 +6,23 @@ import com.agentcore.domain.tool.model.Tool;
 import com.agentcore.domain.tool.model.ToolContext;
 import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.domain.tool.schema.Schemas;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
-/** bash 工具：在工作目录执行命令，返回合并的 stdout/stderr 与退出码；超时或取消时杀掉整个进程树。 */
+/**
+ * bash 工具：在工作目录执行命令，返回合并的 stdout/stderr 与退出码；超时或取消时杀掉整个进程树。
+ * 输出只保留开头和结尾各 {@value #KEPT_OUTPUT_BYTES} 字节，输出再多也不会撑爆内存。
+ */
 public final class ShellTools {
 
     private static final int DEFAULT_TIMEOUT_SECONDS = 120;
     private static final int MAX_TIMEOUT_SECONDS = 600;
+    /** 输出开头、结尾各保留多少字节（之后截断拦截器还会再截到 maxOutputChars）。 */
+    static final int KEPT_OUTPUT_BYTES = 256 * 1024;
+    /** 命令结束后，等读取线程把剩下的输出读完的时间。后台进程（cmd &amp;）会一直占着输出管道，不能无限等。 */
+    private static final long OUTPUT_DRAIN_MILLIS = 5000;
+    private static final long OUTPUT_DRAIN_AFTER_KILL_MILLIS = 2000;
 
     private ShellTools() {
     }
@@ -49,23 +53,23 @@ public final class ShellTools {
         builder.environment().put("TERM", "dumb");
         builder.redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
         Process process = builder.start();
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Thread reader = Thread.ofVirtual().start(() -> copy(process.getInputStream(), output));
+        HeadTailBuffer output = new HeadTailBuffer(KEPT_OUTPUT_BYTES, KEPT_OUTPUT_BYTES);
+        Thread reader = Thread.ofVirtual().start(() -> output.readFully(process.getInputStream()));
         Runnable unregister = ctx.cancel().onCancel(() -> kill(process));
         try {
             if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
                 kill(process);
-                reader.join(2000);
-                throw new ToolException("Command timed out after " + timeoutSeconds + "s and was killed.\n" + text(output));
+                reader.join(OUTPUT_DRAIN_AFTER_KILL_MILLIS);
+                throw new ToolException("Command timed out after " + timeoutSeconds + "s and was killed.\n" + output.text());
             }
-            reader.join(5000);
+            reader.join(OUTPUT_DRAIN_MILLIS);
         } catch (InterruptedException e) {
             kill(process);
             throw e;
         } finally {
             unregister.run();
         }
-        String text = text(output).stripTrailing();
+        String text = output.text().stripTrailing();
         int exitCode = process.exitValue();
         return ToolOutput.text((text.isEmpty() ? "(no output)" : text) + "\n[exit code " + exitCode + "]", Map.of("exit_code", exitCode));
     }
@@ -75,23 +79,4 @@ public final class ShellTools {
         process.destroyForcibly();
     }
 
-    private static void copy(InputStream in, ByteArrayOutputStream out) {
-        byte[] buffer = new byte[8192];
-        try {
-            int read;
-            while ((read = in.read(buffer)) >= 0) {
-                synchronized (out) {
-                    out.write(buffer, 0, read);
-                }
-            }
-        } catch (IOException ignored) {
-            // 进程被杀时流会关闭
-        }
-    }
-
-    private static String text(ByteArrayOutputStream output) {
-        synchronized (output) {
-            return output.toString(StandardCharsets.UTF_8);
-        }
-    }
 }

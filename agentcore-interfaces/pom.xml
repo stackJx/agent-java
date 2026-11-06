@@ -13,6 +13,7 @@
   <dependencies>
     <dependency><groupId>com.agentcore</groupId><artifactId>agentcore-application</artifactId></dependency>
     <dependency><groupId>com.agentcore</groupId><artifactId>agentcore-infrastructure</artifactId></dependency>
+    <dependency><groupId>org.jline</groupId><artifactId>jline</artifactId></dependency>
     <!-- Web 接口（注解控制器）。optional：只用命令行或不需要 Web 的应用不会被带上 Tomcat -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

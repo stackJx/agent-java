@@ -25,7 +25,12 @@ public final class ConsoleApprover implements Approver {
         if (request.tool().equals("write_file") || request.tool().equals("edit_file")) {
             printPreview(request.arguments().getOrDefault("new_string", request.arguments().get("content")));
         }
-        String input = io.readLine("  [y]允许 / [a]总是允许 / [n]拒绝（也可直接输入拒绝理由）: ");
+        String input;
+        try {
+            input = io.readLine("  [y]允许 / [a]总是允许 / [n]拒绝（也可直接输入拒绝理由）: ");
+        } catch (ConsoleIO.InterruptedInput e) {
+            return Approval.deny("cancelled by user"); // 在审批提示下按 Ctrl+C 当作拒绝，绝不能当作允许
+        }
         if (input == null) {
             return Approval.deny("no input available");
         }

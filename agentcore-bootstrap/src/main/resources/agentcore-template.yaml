@@ -31,13 +31,17 @@ agentcore:
 
   permissions:
     mode: default                          # default / auto（全部放行）/ readonly
-    allow: ["bash(git status*)", "bash(git diff*)", "bash(ls *)"]
-    deny: ["bash(rm -rf *)", "bash(sudo *)"]
+    allow: ["bash(git status*)", "bash(git diff*)", "bash(ls *)"]   # web_fetch 默认每次询问，可按网址放行："web_fetch(https://docs.example.com/*)"
+    deny: ["bash(rm -rf *)", "bash(sudo *)"]                       # deny 只是字符串匹配，能被绕开，不能当安全边界
+
+  # web-fetch:
+  #   allow-private-network: false         # true：允许 web_fetch 访问本机、内网地址（默认拒绝）
 
   # mcp-servers:
   #   filesystem:
   #     command: npx
   #     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+  #     trust-annotations: false           # true：服务器标了 readOnlyHint 的工具免审批（默认照常询问）
 
   subagents:
     researcher:
@@ -55,8 +59,14 @@ agentcore:
   #     enabled: true
   #     initialize-schema: create-if-missing   # never：由 DBA 执行建表脚本
 
+  # sessions:
+  #   retention: 30d                     # 超过 30 天没更新的会话自动删除（默认永久保留）
+
   # web:
   #   token: ${AGENTCORE_TOKEN}          # 设置后接口需要 Authorization: Bearer <token>（health 除外）
+  #   user-tokens:                       # 多用户：每个用户一个 token，只能看到自己的会话
+  #     alice: ${ALICE_TOKEN}
+  #   local-only: true                   # 没配 token 时只接受本机请求；有统一认证、要远程访问时设为 false
 
 # spring:
 #   datasource:

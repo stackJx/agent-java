@@ -83,8 +83,9 @@ public final class ConsoleRenderer implements AgentEventListener {
             }
             case AgentEvent.Retrying retrying -> {
                 switchTo(null);
-                info.println(ansi.yellow("\n↻ 第 " + retrying.attempt() + " 次重试（" + retrying.delayMillis() / 1000.0 + "s 后）："
-                        + Texts.clip(retrying.error(), 200)));
+                // 重试会从头重新生成这一轮：上面已经打印出来的半截回复作废
+                info.println(ansi.yellow("\n↻ 第 " + retrying.attempt() + " 次重试（" + retrying.delayMillis() / 1000.0 + "s 后，"
+                        + "上面这一轮已输出的内容作废，将重新生成）：" + Texts.clip(retrying.error(), 200)));
             }
             case AgentEvent.Notice notice -> {
                 switchTo(null);

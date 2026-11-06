@@ -44,6 +44,9 @@ import java.util.stream.Collectors;
  */
 public final class Conversation extends AggregateRoot<ConversationId> {
 
+    /** 元数据里记录会话归属的键：多用户部署时，只有这个用户能看到、操作这个会话。 */
+    public static final String OWNER = "owner";
+
     /** 最近一次模型请求时的上下文规模，用于精确估算下一次请求的 token 数。 */
     public record ContextSnapshot(int messageCount, long tokens) {
     }
@@ -122,7 +125,7 @@ public final class Conversation extends AggregateRoot<ConversationId> {
         updatedAt = e.occurredAt();
     }
 
-    /** 新产生的事件：先改状态，再放进待保存列表，等仓储 save 时用 pullEvents 取走。 */
+    /** 新产生的事件：先改状态，再放进待保存列表，仓储 save 写成功后才把它移出列表。 */
     private void record(DomainEvent e) {
         apply(e);
         raise(e);
@@ -269,6 +272,11 @@ public final class Conversation extends AggregateRoot<ConversationId> {
 
     public synchronized Map<String, String> metadata() {
         return Collections.unmodifiableMap(new LinkedHashMap<>(metadata));
+    }
+
+    /** 会话属于哪个用户（元数据 {@value #OWNER}）；单用户部署时为 null。 */
+    public synchronized String owner() {
+        return metadata.get(OWNER);
     }
 
     /** 标题：第一条用户输入的首行（压缩后保持不变）；还没有输入时取元数据里的 title。 */

@@ -42,6 +42,7 @@ class AgentControllerTest {
         ModelGateway scriptedModel() {
             return new ScriptedModelGateway()
                     .then(reply("我来写入。", call("write_thing", "name", "x")))
+                    .then(reply("再写一个。", call("write_thing", "name", "y")))
                     .then(reply("写好了。"));
         }
 
@@ -69,6 +70,13 @@ class AgentControllerTest {
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString()).body());
     }
 
+    int postStatus(String path, String body) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString()).statusCode();
+    }
+
+    /** 两次写入各要审批一次；第一次审批时再发一条消息：返回 409，而且不会抢走这次运行的审批通道（第二次审批照样推到这条流上）。 */
     @Test
     void sseStreamWithWebApproval() throws Exception {
         String id = post("/agent/conversations", "{\"metadata\":{\"user\":\"u1\"}}").path("id").asText();
@@ -84,6 +92,7 @@ class AgentControllerTest {
 
         List<String> types = new ArrayList<>();
         StringBuilder text = new StringBuilder();
+        int approvals = 0;
         String event = null;
         Iterator<String> it = resp.body().iterator();
         while (it.hasNext()) {
@@ -94,6 +103,10 @@ class AgentControllerTest {
             } else if (line.startsWith("data:")) {
                 JsonNode data = Json.read(line.substring(5).strip());
                 if ("approval_required".equals(event)) {
+                    approvals++;
+                    if (approvals == 1) {
+                        assertThat(postStatus("/agent/conversations/" + id + "/messages", "{\"text\":\"插一句\"}")).isEqualTo(409);
+                    }
                     JsonNode pending = Json.read(http.send(HttpRequest.newBuilder(
                             URI.create("http://127.0.0.1:" + port + "/agent/approvals?conversationId=" + id)).GET().build(),
                             HttpResponse.BodyHandlers.ofString()).body());
@@ -107,13 +120,14 @@ class AgentControllerTest {
                 }
             }
         }
-        assertThat(WRITES.get()).isEqualTo(1);
-        assertThat(text.toString()).isEqualTo("我来写入。写好了。");
+        assertThat(approvals).isEqualTo(2);
+        assertThat(WRITES.get()).isEqualTo(2);
+        assertThat(text.toString()).isEqualTo("我来写入。再写一个。写好了。");
         assertThat(types).contains("run_started", "approval_required", "permission_decided", "tool_started", "tool_finished", "run_finished");
 
         JsonNode conv = Json.read(http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/agent/conversations/" + id))
                 .GET().build(), HttpResponse.BodyHandlers.ofString()).body());
-        assertThat(conv.path("messages").size()).isEqualTo(4);
+        assertThat(conv.path("messages").size()).isEqualTo(6);
         assertThat(conv.path("running").asBoolean()).isFalse();
     }
 

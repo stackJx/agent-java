@@ -47,10 +47,10 @@ bin/agentcore init                               # 生成带注释的 agentcore.
 |---|---|
 | 直接 `java -jar agentcore.jar` | 约 3.5 秒 |
 | `bin/agentcore`，jar 更新后第一次（解压 + 生成缓存） | 约 6.5 秒 |
-| `bin/agentcore`，之后每次 | 约 1.6 秒 |
+| `bin/agentcore`，之后每次 | 约 1.7 秒 |
 
 命令行命令还只用 C1 编译器（启动快）；`serve` 是长期运行的服务，保留完整的 JIT。缓存放在 `agentcore-bootstrap/target/agentcore-app/`，jar 重新构建后自动重建；`AGENTCORE_CDS=0` 关闭。
-交互模式里：`/help /new /compact /tools /usage /sessions /resume <id> /memory /exit`，运行中按 `Ctrl+C` 取消当前任务（不会退出程序）。
+交互模式里：`/help /new /compact /tools /usage /sessions /resume <id> /memory /exit`，运行中按 `Ctrl+C` 取消当前任务（不会退出程序）。在真实终端里输入由 JLine 处理：方向键编辑、上下键翻历史（存在 `~/.agentcore/history`）、Tab 补全斜杠命令，在提示符下按 `Ctrl+C` 放弃当前这行；输入被管道或重定向时退回按行读取。
 
 命令行内部怎么分工：
 
@@ -62,7 +62,8 @@ flowchart LR
     svc -- "AgentEvent" --> render["ConsoleRenderer<br/>正文写 stdout<br/>过程信息写 stderr"]
     svc -- "需要审批" --> appr["ConsoleApprover<br/>[y]/[a]/[n]"]
     svc -- "ask_user 工具" --> prompt["ConsolePrompter"]
-    sig["Ctrl+C"] --> sh["SignalHandling<br/>运行中转成取消"] --> svc
+    stdin -. "JLine：行编辑、历史、Tab 补全" .-> io["ConsoleIO"]
+    sig["Ctrl+C"] --> io -- "运行中转成取消" --> svc
 ```
 
 正文和过程信息分开输出，所以 `bin/agentcore run "..." > answer.txt` 只会得到答案本身。
@@ -124,9 +125,49 @@ data: {"type":"run_finished","stop_reason":"end_turn","text":"你好！有什么
 几点要注意：
 
 - 发消息的请求会**一直挂着**直到运行结束，前端要按流式读取（`fetch` + `ReadableStream`，或 `EventSource` 的 POST 封装）。
-- 前端中途断开连接，服务端写事件失败，会自动取消这次运行。
+- 每条连接有自己的写出线程和有上限的事件队列（`SseEventStream`）：客户端网速慢不会拖慢 Agent。前端中途断开（写失败），或者 30 秒都不读、队列一直是满的，都会自动取消这次运行。
+- 会话详情里的图片默认不带 base64 数据（换成 `data_omitted: true` 和大致字节数），需要原图时加 `?include_images=true`；会话列表一次最多 200 个；`DELETE /conversations/{id}` 删除会话（运行中返回 409）。
+- 插话返回 `accepted: false` 表示没有正在进行的运行（或者它正在收尾），应该把这段话作为新消息发送。
 - 经过 Nginx 时，服务端已经带了 `X-Accel-Buffering: no`，事件不会被缓冲。
-- 配置了 `agentcore.web.token` 后，除 `/health` 外的请求都要带 `Authorization: Bearer <token>`。已经接入 Spring Security 的应用不用配它。
+- 配置了 `agentcore.web.token` 后，除 `/health` 外的请求都要带 `Authorization: Bearer <token>`。
+- **没配置 token 时，默认只接受本机请求**（`LocalOnlyInterceptor`）：来源地址必须是本机、`Host` 头必须是 localhost / 127.0.0.1 / [::1]、带 `Origin` 头时也必须是本机。这样别的机器连不上，网页也没法通过跨站请求或 DNS rebinding 借道调用（否则网页就能在你的机器上跑 bash）。命令行工具（curl）和本机前端不受影响。已经接入 Spring Security 等统一认证、需要远程访问时，设 `agentcore.web.local-only: false`。
+- 同一个会话正在运行时再发消息，返回 409，正在进行的那次运行不受影响（审批照样推给原来的连接）。
+
+### 多用户
+
+能认出用户时，新建的会话归这个用户（元数据 `owner`，调用方自己填的 owner 会被覆盖），他只能看到、操作自己的会话和审批，别人的会话一律当作不存在（404）。用户从哪来（`WebCaller`）：
+
+1. 每个用户一个 token：`agentcore.web.user-tokens.<用户名>: <token>`；
+2. 应用自己的认证（Spring Security 等）登录的用户：`request.getUserPrincipal()`。
+
+认不出用户时（单用户部署，或者用共享的 `agentcore.web.token` 访问），可以访问所有会话 —— 共享 token 相当于管理员。
+
+```yaml
+agentcore:
+  web:
+    token: ${AGENTCORE_ADMIN_TOKEN}        # 可选：管理员，能看到全部
+    user-tokens:
+      alice: ${ALICE_TOKEN}
+      bob: ${BOB_TOKEN}
+```
+
+### 指标
+
+应用里有 Micrometer 的 `MeterRegistry`（例如引入了 `spring-boot-starter-actuator`）时，starter 自动记录下面这些指标（`MicrometerRunObserver`，`agentcore.metrics.enabled: false` 关闭）：
+
+| 名称 | 类型 | 标签 | 含义 |
+|---|---|---|---|
+| `agentcore.runs` | 计时器 | agent, stop_reason | 一次运行的总耗时（次数即运行数） |
+| `agentcore.model.calls` | 计时器 | model, stop_reason | 一次模型调用的耗时（含重试等待） |
+| `agentcore.model.tokens` | 计数器 | model, type | token 用量，type 为 input / output / cache_read / cache_write |
+| `agentcore.model.retries` | 计数器 | model | 模型调用的重试次数 |
+| `agentcore.tool.calls` | 计时器 | tool, outcome | 工具调用耗时，outcome 为 success / error |
+| `agentcore.approvals` | 计时器 | tool, decision | 等审批人回答的时间 |
+
+### 会话保留期限
+
+`agentcore.sessions.retention: 30d`：超过 30 天没更新的会话会被自动删除（正在运行的除外），启动时和之后每小时清理一次。不设置表示永久保留。
+- 收到 `retrying` 事件表示这一轮要从头重新生成：丢弃这条回复已经显示的部分。
 
 ## 3. Spring Boot
 

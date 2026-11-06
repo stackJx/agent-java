@@ -43,6 +43,7 @@ public final class EventCodec {
                 json.put("tool", decided.tool());
                 json.put("decision", decided.decision());
                 json.put("reason", decided.reason());
+                json.put("wait_ms", decided.waitMillis());
             }
             case AgentEvent.ToolFinished finished -> {
                 json.put("call_id", finished.call().id());

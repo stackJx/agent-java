@@ -42,14 +42,21 @@ sequenceDiagram
     Eng->>Conv: addAssistantReply(...)
     Note over Conv: 产生 MessageAppended，放进待保存列表
     Eng->>Repo: save(conversation)
-    Repo->>Conv: pullEvents()
+    Repo->>Conv: pendingEvents()
     Repo->>Store: 追加写入这些事件
+    Repo->>Conv: 写成功后 markEventsSaved(events)
     Note over Repo,Store: 读取时：按顺序读出全部事件 → Conversation.replay(events)
 ```
 
 仓储不需要理解会话的结构，所以每个实现都很短。事件转 JSON 的代码统一在 `infrastructure/json/DomainCodec.java`。
 
-**身份映射（identity map）**：仓储把加载过的会话缓存起来，同一进程里同一个会话 ID 永远拿到同一个对象。这样 HTTP 接口读详情和正在运行的 Agent 看到的是同一份数据，不会互相覆盖。
+**写失败不丢事件**：写成功之后才把事件标记为已保存。写失败时事件留在聚合里，下次保存连同新事件一起补写，不会出现中间断档的历史。JSONL 文件末尾如果留着上次写到一半的行，追加前会先补一个换行，新事件不会接在半行后面一起变成坏行。
+
+**身份映射（identity map）**：仓储把加载过的会话缓存起来，缓存期间同一进程里同一个会话 ID 拿到同一个对象。这样 HTTP 接口读详情和正在运行的 Agent 看到的是同一份数据，不会互相覆盖。缓存最多 200 个会话（最久没用的先丢，需要时从存储重新加载），长期运行的服务内存不会只增不减。`AgentService` 先占住会话再加载，所以开始一次运行时拿到的一定是上一次运行保存之后的状态。
+
+**删除与保留期限**：`ConversationRepository#delete` 删除一个会话的全部数据；`deleteNotUpdatedSince(cutoff, keep)` 删除超过期限没更新的会话（keep 里的除外，`AgentService` 传入正在运行的会话）。配置 `agentcore.sessions.retention: 30d` 后，starter 在启动时和之后每小时清理一次（后台守护线程，`ConversationRetention`）。JSONL 按文件修改时间判断，JDBC 按摘要表的 `updated_at`。
+
+**按用户列出**：`list(limit, owner)` 只列出元数据 `owner` 等于它的会话（多用户部署，见 [07 接入方式](07-integration.md)）。JDBC 实现从最近的开始逐行读、过滤，凑够 limit 个就停 —— owner 在元数据 JSON 里，各数据库的 JSON 查询写法不通用。
 
 ## 3. JSONL 文件
 
@@ -74,7 +81,7 @@ sequenceDiagram
 
 ## 4. 数据库（JDBC）
 
-代码在 `infrastructure/persistence/jdbc/`，只用标准 JDBC，不依赖 JPA 或任何 ORM，目的是**能接尽量多的数据库**。
+代码在 `infrastructure/persistence/jdbc/`，用 Spring JDBC 手写 SQL（`JdbcClient` 读写、`TransactionTemplate` 管事务，都由 `JdbcStore` 提供），不依赖 JPA 或任何 ORM，目的是**能接尽量多的数据库**。Spring JDBC 只是一个库，不需要 Spring 容器也能用。
 
 ### 支持的数据库
 
@@ -151,8 +158,11 @@ sequenceDiagram
     B->>DB: UPDATE conversation SET last_seq=6 ... WHERE id=? AND last_seq=5
     DB-->>B: 更新 0 行（版本已经是 6 了）
     B->>B: 抛 ConcurrencyConflictException，回滚
-    Note over B: 丢弃内存里的缓存，下次 findById 从数据库重新加载
+    Note over B: 丢弃缓存，下次 findById 从数据库重新加载
 ```
+
+版本号按**聚合实例**记录，而不是按会话 ID：B 手里那个旧实例记着的仍是 5，之后再用它保存也会继续冲突，不会把两段分叉的历史拼到一起；
+如果只是数据库暂时不可用（不是别人写过），版本对得上，下次保存会把上次没写进去的事件一起补写。
 
 即使两边的 UPDATE 都"成功"了（比如某些隔离级别下），`(conversation_id, seq)` 是主键，第二个 `INSERT seq=6` 也会违反唯一约束，同样被翻译成 `ConcurrencyConflictException`。
 

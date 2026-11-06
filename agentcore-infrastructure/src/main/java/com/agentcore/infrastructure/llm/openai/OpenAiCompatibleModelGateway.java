@@ -22,8 +22,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -112,10 +114,14 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
         InputStream body = OpenAiHttp.post(http, endpoint, Json.write(buildBody(request)), options.apiKey(), options.headers(),
                 options.timeout());
         StreamedReply reply = new StreamedReply(model, listener);
-        OpenAiHttp.readEvents(body, cancel, chunk -> {
+        boolean finished = OpenAiHttp.readEvents(body, cancel, options.timeout(), chunk -> {
             reply.accept(chunk);
             return true;
         });
+        // 既没收到 [DONE] 也没收到 finish_reason 就断了（例如代理断开）：回复不完整，不能当作正常结束存下来
+        if (!finished && reply.finishReason == null) {
+            throw new ModelException("stream ended before the response was complete", true);
+        }
         if ("insufficient_system_resource".equals(reply.finishReason)) {
             throw new ModelException("provider reported insufficient_system_resource", true);
         }
@@ -192,7 +198,7 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
                 JsonNode delta = deltas.get(position);
                 int index = delta.hasNonNull("index") ? delta.get("index").asInt() : position;
                 PartialToolCall call = toolCalls.computeIfAbsent(index, key -> new PartialToolCall());
-                if (delta.hasNonNull("id")) {
+                if (delta.hasNonNull("id") && !delta.get("id").asText().isBlank()) {
                     call.id = delta.get("id").asText();
                 }
                 JsonNode function = delta.path("function");
@@ -222,10 +228,21 @@ public final class OpenAiCompatibleModelGateway implements ModelGateway {
             if (!text.isEmpty()) {
                 content.add(new TextBlock(text.toString()));
             }
+            Set<String> usedIds = new HashSet<>();
             for (PartialToolCall call : toolCalls.values()) {
-                content.add(OpenAiHttp.toolCall(call.id, call.name, call.arguments.toString()));
+                content.add(OpenAiHttp.toolCall(uniqueId(call.id, usedIds), call.name, call.arguments.toString()));
             }
             return new ModelResponse(Message.assistant(content, null), stopReason(), usage, modelName, finishReason, null);
+        }
+
+        /**
+         * 工具调用 ID 必须互不相同：结果按 ID 回填。有的兼容服务给空 ID 或重复 ID，这时生成一个新的
+         * （Chat Completions 的历史由我们自己回放，换掉 ID 不会和服务端对不上）。
+         */
+        private static String uniqueId(String id, Set<String> usedIds) {
+            String unique = id == null || id.isBlank() || usedIds.contains(id) ? OpenAiHttp.newCallId() : id;
+            usedIds.add(unique);
+            return unique;
         }
 
         private StopReason stopReason() {

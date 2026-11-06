@@ -30,7 +30,7 @@ flowchart TD
     g4 -- ASK --> g5{"5. 审批<br/>Approver.approve"}
     g5 -- "没有审批人（无人值守）" --> e4
     g5 -- 拒绝 --> e4
-    g5 -- "总是允许" --> remember["生成一条 allow 规则记住"] --> g6
+    g5 -- "总是允许" --> remember["为当前会话生成 allow 规则记住"] --> g6
     g5 -- 允许一次 --> g6
     g4 -- ALLOW --> g6{"6. beforeTool 钩子"}
     g6 -- 拦截 --> e6["错误：Blocked by policy hook，附钩子给的原因"]
@@ -58,7 +58,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    in(["工具 + 参数"]) --> subj["算出匹配对象 subject<br/>bash 取命令，文件工具取路径，web_fetch 取 URL"]
+    in(["工具 + 参数"]) --> subj["算出匹配对象 subject<br/>bash 取命令，web_fetch 取 URL<br/>文件工具取解析后的绝对路径（去掉 ..、跟随符号链接）"]
     subj --> d{"命中 deny 规则？"}
     d -- 是 --> DENY(["DENY"])
     d -- 否 --> a{"命中 ask 规则？"}
@@ -68,10 +68,14 @@ flowchart TD
     al -- 否 --> mode{"权限模式"}
     mode -- auto --> ALLOW
     mode -- "readonly 且工具会改东西" --> DENY
-    mode -- "default 或 readonly 的只读工具" --> def{"工具默认值"}
-    def -- "只读工具" --> ALLOW
-    def -- "其他工具" --> ASK
+    mode -- "default 或 readonly 的只读工具" --> def{"工具默认值<br/>tool.defaultPermission()"}
+    def -- "默认放行，且没有访问工作目录之外" --> ALLOW
+    def -- "默认询问（含 web_fetch），或访问工作目录之外" --> ASK
 ```
+
+没有规则命中时用工具的默认值，另外有两条补充：
+- 默认放行的文件工具（`read_file`、`glob`、`grep`）访问**工作目录之外**的路径（例如 `~/.ssh`、`/etc`）改为询问，按真实路径比较，指向外面的符号链接也算外面；
+- `web_fetch` 虽然只读，但会把数据发到外面，默认每次都问。
 
 优先级是 **deny > ask > allow > 模式默认值**：只要命中一条 deny，什么 allow 都救不回来。
 
@@ -79,9 +83,9 @@ flowchart TD
 
 | 模式 | 配置写法 | 行为 | 适合 |
 |---|---|---|---|
-| `default` | `agentcore.permissions.mode: default` | 只读工具直接放行，其他询问 | 有人在旁边看着 |
+| `default` | `agentcore.permissions.mode: default` | 默认免审批的调用直接放行，其他询问 | 有人在旁边看着 |
 | `auto` | `auto` / `yolo`，命令行 `--yolo` | 除了 deny 规则，全部放行 | 沙箱、容器、无人值守 |
-| `readonly` | `readonly`，命令行 `--readonly` | 只允许只读工具，其他一律拒绝 | 只想让它看看、不许改 |
+| `readonly` | `readonly`，命令行 `--readonly` | 会改东西的工具一律拒绝；只读工具按默认值放行或询问 | 只想让它看看、不许改 |
 
 ### 规则写法
 
@@ -94,27 +98,41 @@ agentcore:
       - "bash(git status*)"        # 允许 git status 开头的命令
       - "bash(mvn test*)"
       - "mcp__filesystem__read*"   # 允许某个 MCP 服务器的所有读工具
+      - "web_fetch(https://docs.example.com/*)"  # 这个网站的页面不用每次都问
+      - "write_file(src/*)"        # 相对路径按工作目录算：只放行工作目录下 src 里的文件
     deny:
       - "bash(rm -rf *)"
       - "write_file(/etc/*)"
     ask:
-      - "web_fetch"                # web_fetch 虽然只读，也每次都问
+      - "read_file(*.env)"         # 以通配符开头的匹配任何位置：所有 .env 都要问
 ```
+
+**文件工具按路径匹配**（声明了路径参数的工具：`read_file`、`write_file`、`edit_file`、`glob`、`grep`）。直接拿参数里的原始写法去匹配不安全：`src/../../etc/passwd` 能匹配 `write_file(src/*)`，`../../etc/passwd` 又躲得过 `write_file(/etc/*)`。所以匹配前两边先换成同一种形式（`permission/service/FilePathRules`）：
+
+- 调用里的路径：按工作目录解析成绝对路径，去掉 `.` 和 `..`，跟随符号链接（文件还不存在时，解析最近的存在的上级目录）；
+- 规则里的模式：相对路径按工作目录补全；第一个通配符之前的目录部分同样跟随符号链接（例如 macOS 上 `/etc` 其实是 `/private/etc`）；以通配符开头的模式（`*.env`）原样使用，匹配任何位置。
+
+所以 `write_file(src/*)` 不再放行 `src/../../etc/passwd`，也不放行指向外面的 `src/link/x`；`write_file(/etc/*)` 拦得住 `../../etc/passwd`。
 
 `bash` 有额外的安全处理，防止用一条 allow 规则偷带危险命令：
 
-- 命令按 `;` `&&` `||` `|` 换行 拆成多个子命令；
+- 命令按 `;` `&&` `||` `|` `|&` `&`（后台执行）换行 拆成多个子命令；
 - **deny**：任意一个子命令命中就拒绝；
 - **allow**：每个子命令都要被某条 allow 覆盖才算放行；
 - 命令里有 `$(` `` ` `` `>` `<` 时，allow 规则不生效，转为询问。
 
-所以 `bash(git status*)` 不会放行 `git status && rm -rf /`。
+所以 `bash(git status*)` 不会放行 `git status && rm -rf /`，也不会放行 `git status & rm -rf /`。
 
-用户在审批时选"总是允许"，`RulePermissionPolicy#remember` 会生成一条尽量具体的规则：bash 记成 `bash(第一个词 *)`，例如 `bash(npm *)`；其他工具记成整个工具名。只在当前进程里有效。
+**deny 规则只是字符串匹配**：`rm  -rf`（两个空格）、`/bin/rm -rf`、`sh -c '…'` 都能绕开，只能当作提醒，不能当作安全边界。真正的边界是 allow 白名单加人工审批（或者在容器、沙箱里跑）。
+
+用户在审批时选"总是允许"，`RulePermissionPolicy#remember` 会**为当前会话**生成尽量具体的规则（只在当前进程里有效，其他会话、其他用户不受影响）：
+
+- bash 每个子命令一条：第二个词不是选项时记成"命令 + 子命令"，例如 `npm test` → `bash(npm test*)`（`npm publish` 照样要问）；第二个词是选项时只放行完全相同的命令，例如 `rm -rf build` → `bash(rm -rf build)`；
+- 其他工具记成整个工具名。
 
 ### 换成自己的权限判断
 
-`PermissionPolicy` 接口只有一个必须实现的方法 `check(工具, 参数)`，返回允许 / 询问 / 拒绝和原因；`remember`（用户选"总是允许"时调用）有默认实现：不记住。
+`PermissionPolicy` 接口只有一个必须实现的方法 `check(工具, 参数)`，返回允许 / 询问 / 拒绝和原因；`remember`（用户选"总是允许"时调用）有默认实现：不记住。引擎实际调用的是带 `ToolContext` 的重载 `check(工具, 参数, 上下文)` / `remember(工具, 参数, 上下文)`（能拿到工作目录、会话 ID），它们默认转给不带上下文的版本，所以只写一个 lambda 也能用。
 
 ```java
 PermissionPolicy rules = RulePermissionPolicy.of("default", List.of(), List.of("bash(rm -rf *)"), List.of());
@@ -132,12 +150,12 @@ Spring Boot 里定义一个 `PermissionPolicy` 类型的 Bean 就会替换掉默
 
 ## 3. 审批：谁来回答"可以吗"
 
-审批是一个端口 `Approver`，只有一个方法 `approve(request) → Approval`，可以阻塞到用户做出决定。
+审批是一个端口 `Approver`，必须实现的方法是 `approve(request) → Approval`，可以阻塞到用户做出决定。引擎调用的是可取消的重载 `approve(request, cancel)`：默认忽略取消令牌（命令行在提示下按 Ctrl+C 就是拒绝），`AsyncApprover` 覆盖了它，运行被取消时立刻结束等待。
 
 | 实现 | 位置 | 怎么问 |
 |---|---|---|
 | `ConsoleApprover` | `interfaces/cli` | 命令行提示 `[y]允许 / [a]总是允许 / [n]拒绝`，也可以直接输入拒绝理由，理由会交给模型 |
-| `AsyncApprover` | `application/approval` | 通过"通道"把请求推给前端（SSE、WebSocket、IM 卡片），等前端回调 `resolve()`，超时就拒绝 |
+| `AsyncApprover` | `application/approval` | 通过"通道"把请求推给前端（SSE、WebSocket、IM 卡片），等前端回调 `resolve()`；超时或运行被取消就拒绝 |
 | 不配置 | | 所有 ASK 一律当成 DENY（无人值守时最安全的默认值） |
 
 `AsyncApprover` 在 Web 场景下的时序：
@@ -150,19 +168,19 @@ sequenceDiagram
     participant Eng as AgentEngine（运行线程）
 
     FE->>HTTP: POST /conversations/{id}/messages
-    HTTP->>AA: attach(id, 通道：往这个 SSE 连接推事件)
-    HTTP->>Eng: chatAsync(...)
-    Eng->>AA: approve(request)，运行线程在这里阻塞
+    HTTP->>Eng: chatAsync(...)：先占住会话（已在运行就返回 409）
+    Eng->>AA: 占住之后才 attach(id, 通道：往这个 SSE 连接推事件)
+    Eng->>AA: approve(request, cancel)，运行线程在这里阻塞
     AA->>HTTP: 通道.requestApproval(request)
     HTTP-->>FE: SSE 事件 approval_required {request_id, tool, summary}
     FE->>HTTP: POST /approvals/{request_id} {"decision": "allow"}
     HTTP->>AA: resolve(request_id, allow)
     AA-->>Eng: Approval.allow()，运行继续
-    Note over AA: 超时（默认 300 秒）或前端断开：返回拒绝
-    HTTP->>AA: 运行结束后 detach(id)
+    Note over AA: 超时（默认 300 秒）、前端断开或运行被取消：返回拒绝
+    HTTP->>AA: 运行结束后 detach(id, 这次的通道)
 ```
 
-多个工具同时需要审批时，引擎用一把锁让它们**排队**，一次只弹一个，避免多个提示交错。
+**同一个会话**里多个工具同时需要审批时，引擎让它们**排队**，一次只弹一个，避免多个提示交错。不同会话的审批互不影响：引擎是所有会话共用的，队列按会话 ID 分开，没人排队时自动移除。排队和等待审批时都可以被取消。
 
 ## 4. 钩子：不改引擎代码，插入自己的规则
 
@@ -231,6 +249,7 @@ classDiagram
         defaultPermission() PermissionLevel
         timeout() Duration
         maxOutputChars() int
+        permissionPath(args) String
         permissionSubject(args) String
     }
     class FunctionTool { 用 builder 拼出来的工具 }
@@ -265,13 +284,14 @@ Tool lookup = FunctionTool.builder("lookup")
 
 **方式三：直接实现 `Tool` 接口**，需要完全控制时用，比如 `TaskTool`。
 
-**方式四：MCP 服务器**。在配置里写 `agentcore.mcp-servers`，启动时连接、列出远端工具，每个包装成一个 `McpTool`。远端标了 `readOnlyHint` 的会被当成只读工具。
+**方式四：MCP 服务器**。在配置里写 `agentcore.mcp-servers`，启动时连接、列出远端工具，每个包装成一个 `McpTool`。远端标了 `readOnlyHint` 的会被当成只读工具，但这只是服务器的自我声明（MCP 规范要求不要据此做安全决策），所以默认只用来决定能否并行执行，权限照常询问；在服务器配置里写 `trust_annotations: true`，标了只读的工具才免审批。工具名替换非法字符、截到 64 个字符后撞名的，会加 `_2`、`_3` 后缀。协议用官方 MCP Java SDK 实现，支持子进程（`command` / `args` / `env` / `cwd`）和 Streamable HTTP（`url` / `headers`）两种连接方式，`McpServerManager` 负责按配置并发启动、收集工具。
 
 ### 写工具时要注意
 
 | 属性 | 默认值 | 影响 |
 |---|---|---|
-| `readOnly` | false | 决定默认免审批、能否与其他只读工具并行 |
+| `readOnly` | false | 决定能否与其他只读工具并行，以及默认是否免审批 |
+| `permissionPath(参数)` | null | 这次调用要访问的文件路径。返回非 null 时，权限规则按解析后的绝对路径匹配，读工作目录之外要询问。`FunctionTool` 用 `.pathArgument("path")` 声明（搜索类工具 `.pathArgument("path", ".")`：没传时就是工作目录） |
 | `timeout` | 10 分钟 | 超时会中断执行线程。自己控制超时的工具（如 `bash`）返回 null |
 | `maxOutputChars` | 30000 | 超出后截掉中间部分，防止撑爆上下文 |
 | 抛 `ToolException` | | 表示"模型可以自己修正的错误"，消息会原样交给模型 |
@@ -283,11 +303,11 @@ Tool lookup = FunctionTool.builder("lookup")
 
 | 工具 | 只读 | 作用 |
 |---|---|---|
-| `read_file` | ✓ | 读文件（带行号，支持分段） |
-| `glob` / `grep` | ✓ | 按文件名 / 内容搜索 |
-| `web_fetch` | ✓ | 抓网页 |
-| `write_file` / `edit_file` | | 写文件 / 精确替换 |
-| `bash` | | 执行命令，自带超时（默认 120 秒，最长 600 秒） |
+| `read_file` | ✓ | 读文件（带行号，支持分段；逐行读，单行超过 2000 字符的部分不显示）。工作目录之外默认询问 |
+| `glob` / `grep` | ✓ | 按文件名 / 内容搜索；结果边读边截，只保留 max_results 行。工作目录之外默认询问 |
+| `web_fetch` | ✓（默认询问） | 抓网页：最多读 5 MB；默认拒绝本机、内网、链路本地地址（每一跳重定向都检查），`agentcore.web-fetch.allow-private-network: true` 放开 |
+| `write_file` / `edit_file` | | 写文件 / 精确替换（`old_string` 不能为空；只改 UTF-8 文件，GBK 等编码会给出明确错误） |
+| `bash` | | 执行命令，自带超时（默认 120 秒，最长 600 秒）；输出只保留开头和结尾各 256 KB |
 | `todo_write` | 免审批 | 维护任务清单 |
 | `ask_user` | 免审批 | 向用户提问（需要宿主提供 `UserPrompter`） |
 | `memory_save` / `memory_read` / `memory_search` / `memory_delete` | 读、搜只读；写、删免审批 | 长期记忆 |

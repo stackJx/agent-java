@@ -9,13 +9,26 @@ import java.util.Map;
 /** 内置工具集合。 */
 public final class BuiltinTools {
 
+    /** 内置工具的可调选项。 */
+    public record Options(boolean webFetchAllowsPrivateNetwork) {
+        /** 默认：web_fetch 不允许访问本机和内网地址。 */
+        public static Options defaults() {
+            return new Options(false);
+        }
+    }
+
     private BuiltinTools() {
     }
 
     public static Map<String, Tool> all() {
+        return all(Options.defaults());
+    }
+
+    public static Map<String, Tool> all(Options options) {
         Map<String, Tool> byName = new LinkedHashMap<>();
         for (Tool tool : List.of(FileTools.readFile(), FileTools.writeFile(), FileTools.editFile(), SearchTools.glob(),
-                SearchTools.grep(), ShellTools.bash(), WebTools.webFetch(), InteractionTools.todoWrite(), InteractionTools.askUser())) {
+                SearchTools.grep(), ShellTools.bash(), WebTools.webFetch(options.webFetchAllowsPrivateNetwork()),
+                InteractionTools.todoWrite(), InteractionTools.askUser())) {
             byName.put(tool.name(), tool);
         }
         return byName;
@@ -23,7 +36,12 @@ public final class BuiltinTools {
 
     /** 按名称选取；names 为 null 表示全部。 */
     public static List<Tool> select(List<String> names) {
-        Map<String, Tool> all = all();
+        return select(names, Options.defaults());
+    }
+
+    /** 按名称选取；names 为 null 表示全部。 */
+    public static List<Tool> select(List<String> names, Options options) {
+        Map<String, Tool> all = all(options);
         if (names == null) {
             return new ArrayList<>(all.values());
         }

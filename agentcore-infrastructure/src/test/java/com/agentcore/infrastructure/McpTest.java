@@ -3,6 +3,7 @@ package com.agentcore.infrastructure;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.agentcore.domain.conversation.message.TextBlock;
+import com.agentcore.domain.tool.model.PermissionLevel;
 import com.agentcore.domain.tool.model.Tool;
 import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.infrastructure.json.Json;
@@ -12,6 +13,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -31,6 +33,7 @@ class McpTest {
             assertTrue(mgr.errors().containsKey("broken"));
             Tool echo = tools.get(1);
             assertTrue(echo.readOnly());
+            assertEquals(PermissionLevel.ASK, echo.defaultPermission(), "服务器自称只读不等于免审批");
             assertTrue(mgr.promptSection().contains("Use echo for testing."));
 
             ToolOutput o1 = echo.execute(Map.of("text", "hi"), null);
@@ -66,7 +69,7 @@ class McpTest {
             if (method.equals("initialize")) {
                 ex.getResponseHeaders().add("Content-Type", "application/json");
                 ex.getResponseHeaders().add("Mcp-Session-Id", "sess-1");
-                body = "{\"jsonrpc\":\"2.0\",\"id\":" + msg.get("id") + ",\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{}}}";
+                body = "{\"jsonrpc\":\"2.0\",\"id\":" + msg.get("id") + ",\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}}}}";
             } else {
                 ex.getResponseHeaders().add("Content-Type", "text/event-stream");
                 String result = method.equals("tools/list")
@@ -84,7 +87,7 @@ class McpTest {
             McpServerManager mgr = new McpServerManager(Map.of("web",
                     Map.of("url", "http://127.0.0.1:" + srv.getAddress().getPort() + "/mcp")), Path.of("."));
             List<Tool> tools = mgr.start();
-            assertEquals(List.of("mcp__web__hello"), tools.stream().map(Tool::name).toList());
+            assertEquals(List.of("mcp__web__hello"), tools.stream().map(Tool::name).toList(), mgr.errors().toString());
             assertEquals("hello from http", tools.get(0).execute(Map.of(), null).text());
             mgr.close();
             assertEquals("initialize:null", calls.get(0));
@@ -92,6 +95,19 @@ class McpTest {
             assertEquals("DELETE:sess-1", calls.get(calls.size() - 1));
         } finally {
             srv.stop(0);
+        }
+    }
+
+    @Test
+    void readOnlyHintSkipsApprovalOnlyForTrustedServers() throws Exception {
+        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        Map<String, Object> trusted = new LinkedHashMap<>();
+        trusted.put("command", java);
+        trusted.put("args", List.of("-cp", System.getProperty("java.class.path"), FakeMcpServer.class.getName()));
+        trusted.put("trust_annotations", true);
+        try (McpServerManager mgr = new McpServerManager(Map.of("trusted", trusted), Path.of("."))) {
+            Tool echo = mgr.start().stream().filter(tool -> tool.name().equals("mcp__trusted__echo")).findFirst().orElseThrow();
+            assertEquals(PermissionLevel.ALLOW, echo.defaultPermission());
         }
     }
 }

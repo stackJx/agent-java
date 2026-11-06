@@ -14,6 +14,10 @@
     <dependency><groupId>com.agentcore</groupId><artifactId>agentcore-domain</artifactId></dependency>
     <dependency><groupId>com.agentcore</groupId><artifactId>agentcore-application</artifactId><scope>test</scope></dependency>
     <dependency><groupId>com.anthropic</groupId><artifactId>anthropic-java</artifactId></dependency>
+    <dependency><groupId>io.modelcontextprotocol.sdk</groupId><artifactId>mcp-core</artifactId></dependency>
+    <dependency><groupId>io.modelcontextprotocol.sdk</groupId><artifactId>mcp-json-jackson2</artifactId></dependency>
+    <dependency><groupId>org.springframework</groupId><artifactId>spring-jdbc</artifactId></dependency>
+    <dependency><groupId>org.jsoup</groupId><artifactId>jsoup</artifactId></dependency>
     <dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId></dependency>
     <dependency><groupId>com.fasterxml.jackson.dataformat</groupId><artifactId>jackson-dataformat-yaml</artifactId></dependency>
     <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><version>${h2.version}</version><scope>test</scope></dependency>

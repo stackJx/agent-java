@@ -64,7 +64,8 @@ public sealed interface AgentEvent {
         }
     }
 
-    record PermissionDecided(String callId, String tool, String decision, String reason) implements AgentEvent {
+    /** 审批的结论。waitMillis：等审批人回答花了多久（排队 + 等待），用于统计审批耗时。 */
+    record PermissionDecided(String callId, String tool, String decision, String reason, long waitMillis) implements AgentEvent {
         public String type() {
             return "permission_decided";
         }

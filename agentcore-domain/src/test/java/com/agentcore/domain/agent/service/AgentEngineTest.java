@@ -180,6 +180,25 @@ class AgentEngineTest {
     }
 
     @Test
+    void failingInterceptorOnlyFailsItsOwnCall() {
+        // 使用者的拦截器有 bug、直接抛异常：这一个调用得到错误结果，运行照常继续，不会整个结束
+        ToolInterceptor buggy = (inv, chain) -> {
+            if ("boom".equals(inv.arguments().get("name"))) {
+                throw new IllegalStateException("interceptor bug");
+            }
+            return chain.proceed(inv);
+        };
+        FakeModel m = new FakeModel().then(reply("", call("write_thing", "name", "boom"))).then(reply("done"));
+        Conversation c = Conversation.start();
+        RunResult r = run(engine(m, WRITE).approver(req -> Approval.allow()).interceptor(buggy).build(), c, "go", new ArrayList<>());
+        assertTrue(r.ok(), String.valueOf(r.error()));
+        assertEquals("done", r.text());
+        ToolResult result = c.messages().get(2).toolResults().get(0);
+        assertTrue(result.isError());
+        assertTrue(result.text().contains("interceptor bug"));
+    }
+
+    @Test
     void denialFeedbackReachesModel() {
         FakeModel m = new FakeModel().then(reply("", call("write_thing", "name", "a"))).then(reply("ok"));
         Conversation c = Conversation.start();
@@ -294,6 +313,32 @@ class AgentEngineTest {
             }
         }, control);
         assertEquals("顺便也看看 b", m.requests.get(1).messages().get(2).text());
+    }
+
+    @Test
+    void steeringIsNeverAcceptedAndThenDropped() {
+        // 模型说完最后一句的同时用户插话：要么再跑一轮处理它，要么明确拒收 —— 不能收下又丢掉
+        FakeModel m = new FakeModel().then(reply("first answer")).then(reply("handled the late steering"));
+        RunControl control = new RunControl();
+        RunResult r = engine(m, SLOW_READ).build().run(Conversation.start(), List.of(new TextBlock("go")), e -> {
+            if (e instanceof AgentEvent.AssistantMessageCompleted && m.requests.size() == 1) {
+                assertTrue(control.steer("还有一件事"));
+            }
+        }, control);
+        assertEquals("handled the late steering", r.text());
+        assertFalse(control.steer("运行已经结束"), "结束之后的插话会被拒收，调用方知道要作为新消息发送");
+
+        // 运行被取消：还没处理的插话交还给调用方
+        RunControl cancelled = new RunControl();
+        FakeModel slow = new FakeModel().then(reply("", call("slow_read", "name", "a")));
+        RunResult stopped = engine(slow, SLOW_READ).build().run(Conversation.start(), List.of(new TextBlock("go")), e -> {
+            if (e instanceof AgentEvent.ToolStarted) {
+                cancelled.steer("顺便看看 b");
+                cancelled.cancel();
+            }
+        }, cancelled);
+        assertEquals(StopReason.CANCELLED, stopped.stopReason());
+        assertEquals(List.of("顺便看看 b"), stopped.unprocessedSteering());
     }
 
     @Test

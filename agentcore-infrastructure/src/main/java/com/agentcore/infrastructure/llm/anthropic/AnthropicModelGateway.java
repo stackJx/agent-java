@@ -327,12 +327,25 @@ public final class AnthropicModelGateway implements ModelGateway {
         if (e instanceof RateLimitException || e instanceof InternalServerException || e instanceof AnthropicIoException
                 || e instanceof AnthropicRetryableException) {
             Integer status = e instanceof AnthropicServiceException service ? service.statusCode() : null;
-            return new ModelException(e.getMessage(), true, status, e);
+            Duration retryAfter = e instanceof AnthropicServiceException service ? retryAfter(service) : null;
+            return new ModelException(e.getMessage(), true, status, e, retryAfter);
         }
         if (e instanceof AnthropicServiceException service) {
-            return new ModelException(service.getMessage(), service.statusCode() >= 500, service.statusCode(), e);
+            boolean retryable = service.statusCode() >= 500;
+            return new ModelException(service.getMessage(), retryable, service.statusCode(), e, retryable ? retryAfter(service) : null);
         }
         return new ModelException(e.getClass().getSimpleName() + ": " + e.getMessage(), false, null, e);
+    }
+
+    /** 服务端的 Retry-After（秒）；没有或看不懂时返回 null，由重试装饰器按指数退避等待。 */
+    private static Duration retryAfter(AnthropicServiceException failure) {
+        return failure.headers().values("retry-after").stream().findFirst().map(value -> {
+            try {
+                return Duration.ofMillis((long) (Double.parseDouble(value.strip()) * 1000));
+            } catch (NumberFormatException notSeconds) {
+                return null;
+            }
+        }).orElse(null);
     }
 
     @Override

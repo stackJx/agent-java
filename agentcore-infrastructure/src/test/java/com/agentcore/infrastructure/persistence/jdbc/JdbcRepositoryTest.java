@@ -15,9 +15,13 @@ import com.agentcore.domain.conversation.model.TokenUsage;
 import com.agentcore.domain.memory.model.MemoryEntry;
 import com.agentcore.domain.memory.model.MemoryType;
 import com.agentcore.domain.shared.exception.ConcurrencyConflictException;
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
@@ -132,6 +136,7 @@ class JdbcRepositoryTest {
         // A 持有旧版本，再写入时被拒绝，不会把历史写乱
         inA.addAssistantReply(Message.assistant("A 的回复"), TokenUsage.of(1, 1));
         assertThrows(ConcurrencyConflictException.class, () -> instanceA.save(inA));
+        assertThrows(ConcurrencyConflictException.class, () -> instanceA.save(inA), "旧实例重试也不会把分叉的历史拼到 B 后面");
 
         // A 重新读取时拿到 B 写入后的最新状态
         Conversation reloaded = instanceA.findById(c.id()).orElseThrow();
@@ -139,6 +144,57 @@ class JdbcRepositoryTest {
         assertEquals(2, reloaded.size());
         // 同一实例内没有变化时返回同一个聚合实例（身份映射）
         assertSame(reloaded, instanceA.findById(c.id()).orElseThrow());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("platforms")
+    void filtersByOwnerDeletesAndExpires(JdbcPlatform platform, String mode) {
+        JdbcStore store = store(platform, mode, "agent_");
+        JdbcConversationRepository repo = new JdbcConversationRepository(store);
+        Conversation alice = Conversation.start(ConversationId.newId(), Map.of(Conversation.OWNER, "alice"));
+        Conversation bob = Conversation.start(ConversationId.newId(), Map.of(Conversation.OWNER, "bob"));
+        Conversation old = Conversation.start();
+        old.addUserInput(List.of(new TextBlock("很久以前")));
+        List.of(alice, bob, old).forEach(repo::save);
+
+        assertEquals(List.of(alice.id()), repo.list(10, "alice").stream().map(ConversationSummary::id).toList());
+        assertEquals(3, repo.list(10).size());
+
+        store.jdbc().sql("UPDATE agent_conversation SET updated_at = ? WHERE id = ?")
+                .params(Timestamp.from(Instant.now().minus(Duration.ofDays(40))), old.id().value())
+                .update();
+        Instant cutoff = Instant.now().minus(Duration.ofDays(30));
+        assertEquals(0, repo.deleteNotUpdatedSince(cutoff, Set.of(old.id())), "正在运行的会话不删");
+        assertEquals(1, repo.deleteNotUpdatedSince(cutoff, Set.of()));
+        assertTrue(new JdbcConversationRepository(store).findById(old.id()).isEmpty());
+        assertEquals(0L, store.jdbc().sql("SELECT COUNT(*) FROM agent_conversation_event WHERE conversation_id = ?")
+                .param(old.id().value()).query(Long.class).single(), "事件也一起删了");
+
+        assertTrue(repo.delete(bob.id()));
+        assertFalse(repo.delete(bob.id()));
+        assertEquals(List.of(alice.id()), repo.list(10).stream().map(ConversationSummary::id).toList());
+    }
+
+    @Test
+    void transientFailureKeepsEventsAndTheRetryWritesThemAll() {
+        JdbcStore store = store(JdbcPlatform.H2, "", "agent_");
+        JdbcConversationRepository repo = new JdbcConversationRepository(store);
+        Conversation c = Conversation.start();
+        c.addUserInput(List.of(new TextBlock("任务")));
+        repo.save(c);
+
+        store.execute("ALTER TABLE agent_conversation_event RENAME TO agent_conversation_event_moved"); // 模拟数据库暂时不可用
+        c.addAssistantReply(Message.assistant(List.of(ToolCall.of("t1", "bash", Map.of("command", "ls"))), null), TokenUsage.of(10, 2));
+        assertThrows(RuntimeException.class, () -> repo.save(c));
+        assertFalse(c.pendingEvents().isEmpty(), "写失败的事件还在聚合里");
+
+        store.execute("ALTER TABLE agent_conversation_event_moved RENAME TO agent_conversation_event");
+        c.repairDanglingToolCalls("Error: the run failed");
+        repo.save(c);
+
+        Conversation loaded = new JdbcConversationRepository(store).findById(c.id()).orElseThrow();
+        assertEquals(c.messages(), loaded.messages(), "工具调用和它的结果都在，历史完整");
+        assertEquals(3, loaded.size());
     }
 
     @ParameterizedTest(name = "{0}")

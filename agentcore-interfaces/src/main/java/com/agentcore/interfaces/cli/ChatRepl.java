@@ -83,34 +83,36 @@ public final class ChatRepl {
         io.err().println(ansi.dim("输入 /help 查看命令"));
     }
 
-    /** 读一条输入，行尾的 \ 表示续行。输入结束返回 null。 */
+    /** 读一条输入，行尾的 \ 表示续行。输入结束返回 null；在提示符下按 Ctrl+C 放弃这条输入（返回空串）。 */
     private String readInput() {
-        String line = io.readLine(ansi.green("\n> "));
-        if (line == null) {
-            return null;
-        }
-        StringBuilder input = new StringBuilder(line);
-        while (input.toString().endsWith("\\")) {
-            input.setLength(input.length() - 1);
-            String more = io.readLine("… ");
-            if (more == null) {
-                break;
+        try {
+            String line = io.readLine(ansi.green("\n> "));
+            if (line == null) {
+                return null;
             }
-            input.append('\n').append(more);
+            StringBuilder input = new StringBuilder(line);
+            while (input.toString().endsWith("\\")) {
+                input.setLength(input.length() - 1);
+                String more = io.readLine("… ");
+                if (more == null) {
+                    break;
+                }
+                input.append('\n').append(more);
+            }
+            return input.toString().strip();
+        } catch (ConsoleIO.InterruptedInput e) {
+            io.err().println(ansi.dim("（已放弃这条输入，Ctrl+D 或 /exit 退出）"));
+            return "";
         }
-        return input.toString().strip();
     }
 
     /** 跑一次；运行期间 Ctrl+C 只取消当前任务，不退出程序。 */
     private void runOnce(String text) {
-        Object previous = SignalHandling.onInterrupt(() -> service.cancel(conversationId));
-        try {
+        try (ConsoleIO.InterruptHandler cancelOnCtrlC = io.onInterrupt(() -> service.cancel(conversationId))) {
             RunResult result = service.chat(conversationId, text, renderer);
             if (result.error() != null) {
                 io.err().println(ansi.red("运行失败：" + result.error()));
             }
-        } finally {
-            SignalHandling.restore(previous);
         }
     }
 
