@@ -42,4 +42,6 @@ fi
 
 CP="$APP/agentcore.jar${AGENTCORE_CLASSPATH:+:$AGENTCORE_CLASSPATH}"
 # shellcheck disable=SC2086
-exec java "${OPTS[@]}" ${AGENTCORE_JAVA_OPTS:-} -cp "$CP" "$MAIN" "$@"
+# bash 3.2（macOS 自带）+ set -u 下空数组展开会报 unbound variable（例如 AGENTCORE_CDS=0 serve），
+# 所以用 ${OPTS[@]+...} 判空再展开
+exec java ${OPTS[@]+"${OPTS[@]}"} ${AGENTCORE_JAVA_OPTS:-} -cp "$CP" "$MAIN" "$@"
