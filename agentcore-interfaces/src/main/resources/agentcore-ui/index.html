@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 接口前缀由服务端写入（agentcore.web.base-path） -->
+  <meta name="agentcore-api-base" content="__AGENTCORE_API_BASE__">
+  <title>AgentCore</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="css/app.css">
+  <script>
+    // 在样式生效前套上保存的主题，避免先闪一下亮色
+    try {
+      const savedTheme = localStorage.getItem("agentcore.theme");
+      if (savedTheme === "light" || savedTheme === "dark") {
+        document.documentElement.dataset.theme = savedTheme;
+      }
+    } catch (storageUnavailable) { /* 隐私模式等：跟随系统 */ }
+  </script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+<div class="app" id="app">
+
+  <aside class="sidebar" id="sidebar" aria-label="会话">
+    <div class="sidebar-header">
+      <div class="brand"><img class="brand-mark" src="favicon.svg" alt=""> AgentCore</div>
+      <button class="icon-button" id="collapse-sidebar" data-icon="sidebar" title="收起侧栏" aria-label="收起侧栏"></button>
+    </div>
+    <button class="new-conversation" id="new-conversation"><span data-icon="plus"></span>新对话</button>
+    <label class="sidebar-search">
+      <span data-icon="search"></span>
+      <input id="conversation-search" type="search" placeholder="搜索对话" aria-label="搜索对话" autocomplete="off">
+    </label>
+    <!-- 按"今天 / 昨天 / 最近 7 天 / 更早"分组显示，由 app.js 生成 -->
+    <nav class="conversation-list" id="conversation-list" aria-label="对话列表"></nav>
+    <div class="sidebar-footer">
+      <span class="model-badge" id="model-badge" title="当前模型">连接中…</span>
+      <button type="button" class="icon-button" id="model-settings-button" data-icon="sliders" title="模型设置" aria-label="模型设置" aria-haspopup="dialog" hidden></button>
+      <button class="icon-button" id="token-button" data-icon="key" title="访问令牌" aria-label="访问令牌"></button>
+      <button class="icon-button" id="theme-button" data-icon="theme" title="切换主题" aria-label="切换主题"></button>
+    </div>
+  </aside>
+
+  <button type="button" class="sidebar-backdrop" id="sidebar-backdrop" aria-label="关闭会话侧栏" hidden></button>
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-button" id="expand-sidebar" data-icon="sidebar" title="展开侧栏" aria-label="展开侧栏"></button>
+      <div class="topbar-title" id="conversation-title">新对话</div>
+      <div class="topbar-meta" id="conversation-meta"></div>
+      <button type="button" class="icon-button" id="refresh-conversation" data-icon="refresh" title="刷新会话" aria-label="刷新会话"></button>
+    </header>
+
+    <section class="messages" id="messages">
+      <div class="messages-inner" id="messages-inner"></div>
+    </section>
+
+    <footer class="composer-area">
+      <form class="composer" id="composer" autocomplete="off">
+        <div class="attachments" id="attachments" hidden></div>
+        <textarea id="composer-input" rows="2" aria-label="消息输入框" placeholder="描述你的任务，也可以粘贴图片…"></textarea>
+        <div class="composer-actions">
+          <button type="button" class="icon-button" id="attach-button" data-icon="paperclip" title="添加图片" aria-label="添加图片"></button>
+          <input type="file" id="attach-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+          <!-- 模型选择：和附件按钮同一行的小标签，不单独占一行 -->
+          <div class="model-picker">
+            <label class="visually-hidden" for="model-select">模型</label>
+            <select id="model-select" aria-describedby="model-status" disabled></select>
+            <button type="button" class="button" id="model-retry" hidden>重试</button>
+          </div>
+          <span class="composer-hint" id="composer-hint"></span>
+          <button type="button" class="stop-button" id="stop-button" data-icon="stop" title="停止" aria-label="停止" hidden></button>
+          <button type="submit" class="send-button" id="send-button" data-icon="arrow-up" title="发送" aria-label="发送"></button>
+        </div>
+        <p class="model-status" id="model-status" role="status" hidden></p>
+      </form>
+    </footer>
+  </main>
+</div>
+
+<dialog id="model-dialog" class="settings-dialog" aria-labelledby="model-heading">
+  <header class="dialog-header">
+    <h2 id="model-heading">模型设置</h2>
+    <button type="button" class="icon-button" id="model-close" data-icon="cross" title="关闭" aria-label="关闭模型设置"></button>
+  </header>
+  <p class="dialog-note" id="model-storage"></p>
+
+  <section class="settings-section">
+    <h3>新对话默认使用</h3>
+    <fieldset id="model-default-fields" class="model-default-fields">
+      <label class="visually-hidden" for="model-default-select">新会话默认模型</label>
+      <select id="model-default-select"></select>
+      <button type="button" class="button" id="model-default-save">设为默认</button>
+    </fieldset>
+    <p class="field-help">“服务端默认模型”是启动时配置的模型，“离线模拟模型”不调用任何服务，两者都不能修改。</p>
+  </section>
+
+  <section class="settings-section">
+    <div class="section-header">
+      <h3>自定义模型</h3>
+      <button type="button" class="button" id="model-create"><span data-icon="plus"></span>新建</button>
+    </div>
+    <div class="model-profiles" id="model-profile-list" aria-label="自定义模型列表"></div>
+  </section>
+
+  <!-- 新建或编辑时才显示 -->
+  <form id="model-form" class="model-form" autocomplete="off" hidden>
+    <fieldset id="model-fields" class="model-fields">
+      <legend id="model-form-title">新建模型</legend>
+      <label>ID<input name="id" required maxlength="64" pattern="[a-z][a-z0-9_\-]{0,63}" placeholder="my-model" autocapitalize="off" spellcheck="false"></label>
+      <label>显示名称<input name="label" required placeholder="例如：工作模型"></label>
+      <label>协议<select name="type"><option value="anthropic">Anthropic</option><option value="openai">OpenAI Chat Completions</option><option value="openai-responses">OpenAI Responses</option><option value="mock">Mock（离线）</option></select></label>
+      <label>模型名称<input name="model" required placeholder="例如：deepseek-v4-pro" spellcheck="false"></label>
+      <label class="model-wide">接口地址<input name="base_url" type="url" placeholder="留空使用协议的官方地址" spellcheck="false"></label>
+      <label class="model-wide">API key<span class="key-state" id="model-key-state">未设置</span><input name="api_key" type="password" autocomplete="new-password" placeholder="留空则保留已保存的 key" spellcheck="false"></label>
+      <label class="model-wide model-clear-key"><input name="clear_api_key" type="checkbox">删除已保存的 API key</label>
+      <label>max_tokens<input name="max_tokens" type="number" min="1" step="1" placeholder="默认 16000"></label>
+      <label>context_window<input name="context_window" type="number" min="1" step="1" placeholder="默认 128000"></label>
+      <div class="form-actions model-wide">
+        <button type="button" class="button button-danger" id="model-delete" hidden>删除</button>
+        <span class="form-actions-spacer"></span>
+        <button type="button" class="button" id="model-cancel">取消</button>
+        <button type="submit" class="button button-primary">保存</button>
+      </div>
+    </fieldset>
+  </form>
+  <p class="dialog-status" id="model-settings-status" role="status"></p>
+</dialog>
+
+<dialog id="token-dialog" aria-labelledby="token-heading">
+  <form method="dialog" id="token-form">
+    <h2 id="token-heading">访问令牌</h2>
+    <p id="token-reason">填写服务端令牌，仅保存在当前标签页的会话存储中。</p>
+    <input id="token-input" type="password" aria-label="访问令牌" placeholder="Bearer token" autocomplete="off">
+    <div class="dialog-actions">
+      <button class="button" value="cancel" formnovalidate>取消</button>
+      <button class="button button-primary" value="save" id="token-save">保存</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

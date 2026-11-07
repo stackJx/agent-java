@@ -29,6 +29,7 @@ public final class LocalOnlyInterceptor implements HandlerInterceptor {
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws IOException {
         String problem = rejectionReason(request);
         if (problem == null) {
+            request.setAttribute(WebCaller.LOCAL_ATTRIBUTE, Boolean.TRUE);
             return true;
         }
         response.setStatus(HttpServletResponse.SC_FORBIDDEN);

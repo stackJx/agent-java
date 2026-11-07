@@ -127,7 +127,7 @@ public final class ModelGatewayFactory implements Function<String, ModelGateway>
                 config.bool("prompt_cache"),
                 config.integer("max_retries"),
                 config.seconds("timeout_seconds"),
-                config.map("extra_body")));
+                config.map("extra_body")), config.flag("inherit_environment", true));
     }
 
     private ModelGateway openAiResponses(ModelSpec spec, Config config) {

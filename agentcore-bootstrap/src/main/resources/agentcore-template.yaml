@@ -67,6 +67,13 @@ agentcore:
   #   user-tokens:                       # 多用户：每个用户一个 token，只能看到自己的会话
   #     alice: ${ALICE_TOKEN}
   #   local-only: true                   # 没配 token 时只接受本机请求；有统一认证、要远程访问时设为 false
+  #   models:
+  #     enabled: true                    # 页面管理/选择模型，保存即对新运行生效
+  #     file: ~/.agentcore/web-models/models.json # 含明文 API key，专用私有目录；空字符串为仅内存
+  #   ui:
+  #     enabled: true                    # 默认提供 Web 对话页面，false 关闭（不关闭 API）
+  #     path: /agentcore                 # 页面入口 /agentcore/
+  #     redirect-root: true              # 独立 serve 默认 true；嵌入 starter 默认 false
 
 # spring:
 #   datasource:

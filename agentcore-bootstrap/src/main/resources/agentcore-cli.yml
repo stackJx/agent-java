@@ -21,6 +21,11 @@ spring:
     virtual:
       enabled: true
 
+agentcore:
+  web:
+    ui:
+      redirect-root: true     # 独立部署版：打开 http://127.0.0.1:8080/ 就是自带的页面
+
 server:
   address: 127.0.0.1          # serve 默认只监听本机；对外提供服务时改成 0.0.0.0 并配置 agentcore.web.token
   port: 8080

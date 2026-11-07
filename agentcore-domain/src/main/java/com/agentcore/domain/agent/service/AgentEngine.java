@@ -13,6 +13,7 @@ import com.agentcore.domain.agent.interceptor.TruncateInterceptor;
 import com.agentcore.domain.agent.model.AgentDefinition;
 import com.agentcore.domain.agent.model.EngineSettings;
 import com.agentcore.domain.agent.model.RunControl;
+import com.agentcore.domain.agent.model.RunModel;
 import com.agentcore.domain.agent.model.RunResult;
 import com.agentcore.domain.context.service.ConversationCompactor;
 import com.agentcore.domain.context.service.TokenEstimator;
@@ -207,8 +208,21 @@ public final class AgentEngine {
      */
     public RunResult run(Conversation conversation, List<? extends ContentBlock> input, AgentEventListener listener,
                          RunControl control) {
+        return run(conversation, input, listener, control, model);
+    }
+
+    /**
+     * 为这一次运行选择模型，不改变引擎默认模型。模型在 Run 内冻结，运行中配置变更不会影响它。
+     * 仍使用同一引擎的工具状态、权限、观察者与仓储，切换模型不会丢掉会话的已读文件记录。
+     * 网关的生命周期由调用方管理；引擎不会关闭传入的网关。
+     */
+    public RunResult run(Conversation conversation, List<? extends ContentBlock> input, AgentEventListener listener,
+                         RunControl control, ModelGateway selectedModel) {
+        if (selectedModel == null) {
+            throw new IllegalArgumentException("selected model is required");
+        }
         return new Run(conversation, listener == null ? AgentEventListener.NOOP : listener,
-                control == null ? new RunControl() : control).execute(input);
+                control == null ? new RunControl() : control, selectedModel).execute(input);
     }
 
     /** 手动压缩一个会话的上下文。 */
@@ -270,6 +284,9 @@ public final class AgentEngine {
         /** 观察者为这次运行给出的监听器（指标等）。 */
         private final List<AgentEventListener> observerListeners;
         private final RunControl control;
+        private final ModelGateway runModel;
+        private final ModelGateway runRetryingModel;
+        private final ModelGateway runRetryingSummarizer;
         private final EngineSettings settings = definition.settings();
         private final Object emitLock = new Object();
 
@@ -283,9 +300,17 @@ public final class AgentEngine {
         private String lastAnswer = "";
 
         Run(Conversation conversation, AgentEventListener listener, RunControl control) {
+            this(conversation, listener, control, model);
+        }
+
+        Run(Conversation conversation, AgentEventListener listener, RunControl control, ModelGateway selectedModel) {
             this.conversation = conversation;
             this.listener = listener;
             this.control = control;
+            this.runModel = selectedModel;
+            this.runRetryingModel = selectedModel == model ? retryingModel : withRetries(selectedModel, settings);
+            // 未单独指定摘要模型时，自动压缩也跟随本次选择；显式摘要模型保持原配置。
+            this.runRetryingSummarizer = summarizer == model ? runRetryingModel : retryingSummarizer;
             this.observerListeners = startObservers(conversation.id().value());
         }
 
@@ -345,7 +370,7 @@ public final class AgentEngine {
                 conversation.addUserInput(input);
                 save();
             }
-            emit(new AgentEvent.RunStarted(conversation.id().value(), definition.name(), model.describe()));
+            emit(new AgentEvent.RunStarted(conversation.id().value(), definition.name(), runModel.describe()));
         }
 
         /** ③～⑩ 主循环。一轮 = 调一次模型；每轮结束由 decideNext 决定是结束运行还是再来一轮。 */
@@ -361,7 +386,7 @@ public final class AgentEngine {
                 emit(new AgentEvent.TurnStarted(turn));
 
                 // ④ 上下文快满了（或上一轮生成时撑满了窗口）：先压缩
-                if (mustCompact || compactor.shouldCompact(estimateContextTokens(conversation), model.contextWindow())) {
+                if (mustCompact || compactor.shouldCompact(estimateContextTokens(conversation), runModel.contextWindow())) {
                     mustCompact = false;
                     compact();
                 }
@@ -388,7 +413,7 @@ public final class AgentEngine {
                 }
                 // ⑥
                 try {
-                    return retryingModel.stream(request, StreamEventForwarder.forReply(this::emit), control.token());
+                    return runRetryingModel.stream(request, StreamEventForwarder.forReply(this::emit), control.token());
                 } catch (ContextOverflowException e) {
                     if (overflowCompactions++ >= MAX_OVERFLOW_COMPACTIONS) {
                         throw e;
@@ -501,7 +526,7 @@ public final class AgentEngine {
             }
             long before = estimateContextTokens(conversation);
             try {
-                ConversationCompactor.Summary summary = compactor.summarize(plan.toSummarize(), retryingSummarizer,
+                ConversationCompactor.Summary summary = compactor.summarize(plan.toSummarize(), runRetryingSummarizer,
                         StreamEventForwarder.retryNoticesOnly(this::emit), control.token());
                 addUsage(summary.usage());
                 conversation.recordUsage(summary.usage(), "compaction");
@@ -550,6 +575,11 @@ public final class AgentEngine {
         @Override
         public CancellationToken cancelToken() {
             return control.token();
+        }
+
+        @Override
+        public RunModel runModel() {
+            return new RunModel(runModel);
         }
 
         @Override

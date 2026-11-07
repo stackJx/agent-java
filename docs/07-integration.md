@@ -72,6 +72,8 @@ flowchart LR
 
 独立部署版用 `bin/agentcore serve --port 8080` 启动（默认只监听 127.0.0.1），嵌入 Spring Boot 应用时自动注册。两者是同一个注解控制器 `AgentController`，路径前缀默认 `/api/agent`（`agentcore.web.base-path`），完整列表见项目 README 的"HTTP / SSE 接口"一节。
 
+默认自带 [Web 对话页面](web-ui.md)：独立 `serve` 访问 `/` 自动跳转 `/agentcore/`；嵌入应用时直接访问 `/agentcore/`。支持流式回复、工具审批、取消、插话和图片输入，资源随 JAR 打包。`agentcore.web.ui.enabled=false` 可只保留 API。
+
 一次完整的交互：
 
 ```mermaid
@@ -128,10 +130,11 @@ data: {"type":"run_finished","stop_reason":"end_turn","text":"你好！有什么
 - 每条连接有自己的写出线程和有上限的事件队列（`SseEventStream`）：客户端网速慢不会拖慢 Agent。前端中途断开（写失败），或者 30 秒都不读、队列一直是满的，都会自动取消这次运行。
 - 会话详情里的图片默认不带 base64 数据（换成 `data_omitted: true` 和大致字节数），需要原图时加 `?include_images=true`；会话列表一次最多 200 个；`DELETE /conversations/{id}` 删除会话（运行中返回 409）。
 - 插话返回 `accepted: false` 表示没有正在进行的运行（或者它正在收尾），应该把这段话作为新消息发送。
-- 经过 Nginx 时，服务端已经带了 `X-Accel-Buffering: no`，事件不会被缓冲。
+- 经过 Nginx 等反向代理时，应对消息接口配置 `proxy_buffering off`，确保 SSE 事件及时到达。
 - 配置了 `agentcore.web.token` 后，除 `/health` 外的请求都要带 `Authorization: Bearer <token>`。
 - **没配置 token 时，默认只接受本机请求**（`LocalOnlyInterceptor`）：来源地址必须是本机、`Host` 头必须是 localhost / 127.0.0.1 / [::1]、带 `Origin` 头时也必须是本机。这样别的机器连不上，网页也没法通过跨站请求或 DNS rebinding 借道调用（否则网页就能在你的机器上跑 bash）。命令行工具（curl）和本机前端不受影响。已经接入 Spring Security 等统一认证、需要远程访问时，设 `agentcore.web.local-only: false`。
 - 同一个会话正在运行时再发消息，返回 409，正在进行的那次运行不受影响（审批照样推给原来的连接）。
+- 收到 `retrying` 事件表示这一轮要从头重新生成：丢弃这一轮已经显示的临时回复与工具卡片。
 
 ### 多用户
 
@@ -167,7 +170,6 @@ agentcore:
 ### 会话保留期限
 
 `agentcore.sessions.retention: 30d`：超过 30 天没更新的会话会被自动删除（正在运行的除外），启动时和之后每小时清理一次。不设置表示永久保留。
-- 收到 `retrying` 事件表示这一轮要从头重新生成：丢弃这条回复已经显示的部分。
 
 ## 3. Spring Boot
 

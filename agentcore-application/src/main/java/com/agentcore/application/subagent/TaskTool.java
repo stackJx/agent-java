@@ -5,6 +5,7 @@ import com.agentcore.domain.agent.event.AgentEvent;
 import com.agentcore.domain.agent.model.AgentDefinition;
 import com.agentcore.domain.agent.model.EngineSettings;
 import com.agentcore.domain.agent.model.RunControl;
+import com.agentcore.domain.agent.model.RunModel;
 import com.agentcore.domain.agent.model.RunResult;
 import com.agentcore.domain.agent.service.AgentEngine;
 import com.agentcore.domain.conversation.message.TextBlock;
@@ -118,7 +119,9 @@ public final class TaskTool implements Tool {
         if (depth > root.definition().settings().maxDepth()) {
             throw new ToolException("maximum sub-agent depth reached; do the work directly instead");
         }
-        AgentEngine child = createChild(root, profile, depth);
+        RunModel runModel = ctx.service(RunModel.class);
+        ModelGateway inheritedModel = runModel == null ? root.model() : runModel.gateway();
+        AgentEngine child = createChild(root, profile, depth, inheritedModel);
         String label = String.valueOf(args.getOrDefault("description", profile.name()));
         RunResult result = runChild(child, String.valueOf(args.get("prompt")), label, ctx);
         return toOutput(result, profile);
@@ -136,10 +139,11 @@ public final class TaskTool implements Tool {
      * 从父引擎派生子引擎：自己的系统提示词、模型（档案指定了就换）、工具子集；不落盘。
      * 子 Agent 不能向用户提问；到了最大深度时连 task 也拿掉，防止无限嵌套。
      */
-    private AgentEngine createChild(AgentEngine root, SubAgentProfile profile, int depth) {
+    private AgentEngine createChild(AgentEngine root, SubAgentProfile profile, int depth, ModelGateway inheritedModel) {
         EngineSettings parentSettings = root.definition().settings();
         String name = root.definition().name() + "/" + profile.name();
-        ModelGateway model = profile.model() != null && modelFactory != null ? modelFactory.apply(profile.model()) : root.model();
+        // 角色未指定模型时继承父运行的快照，而不是启动时的默认模型。
+        ModelGateway model = profile.model() != null && modelFactory != null ? modelFactory.apply(profile.model()) : inheritedModel;
 
         List<String> excluded = new ArrayList<>(List.of("ask_user"));
         if (depth >= parentSettings.maxDepth()) {

@@ -29,6 +29,22 @@ class OpenAiHttpTest {
     }
 
     @Test
+    void closingEitherProtocolRetiresItsHttpClient() throws Exception {
+        try (FakeSseServer server = new FakeSseServer()) {
+            for (String type : List.of("openai", "openai-responses")) {
+                var factory = new com.agentcore.infrastructure.llm.ModelGatewayFactory(
+                        Map.of("fixture", Map.of("type", type, "base_url", server.url(), "api_key", "local-test")));
+                var gateway = factory.create("fixture:model");
+                gateway.close();
+                gateway.close(); // 生命周期回调重复触发也应安全
+                assertThrows(RuntimeException.class,
+                        () -> gateway.stream(REQUEST, ModelStreamListener.NOOP, new CancellationToken()));
+                assertTrue(server.requests.isEmpty(), "关闭后不能继续用遗留连接发送模型请求");
+            }
+        }
+    }
+
+    @Test
     void stalledStreamIsAbortedAndRetryable() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {

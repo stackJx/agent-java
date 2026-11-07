@@ -18,6 +18,7 @@ import com.agentcore.interfaces.cli.ConsoleApprover;
 import com.agentcore.interfaces.cli.ConsoleIO;
 import com.agentcore.interfaces.cli.ConsolePrompter;
 import com.agentcore.interfaces.cli.ConsoleRenderer;
+import com.agentcore.spring.AgentCoreProperties;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -197,9 +198,16 @@ public class AgentCoreApplication {
         warnings(context).forEach((source, problem) -> System.err.println(source + "：" + problem));
         Environment env = context.getEnvironment();
         AgentService service = context.getBean(AgentService.class);
-        System.err.println("agentcore HTTP 服务已启动：http://" + env.getProperty("server.address", "0.0.0.0") + ":"
-                + env.getProperty("local.server.port") + env.getProperty("agentcore.web.base-path", "/api/agent")
-                + "  (" + service.engine().model().describe() + ")");
+        String origin = "http://" + env.getProperty("server.address", "0.0.0.0") + ":" + env.getProperty("local.server.port")
+                + env.getProperty("server.servlet.context-path", "").replaceAll("/+$", "");
+        AgentCoreProperties.Web web = context.getBean(AgentCoreProperties.class).getWeb();
+        System.err.println("agentcore HTTP 服务已启动（" + service.engine().model().describe() + "）");
+        if (web.isEnabled()) {
+            if (web.getUi().isEnabled()) {
+                System.err.println("  页面：" + origin + web.getUi().getPath() + "/");
+            }
+            System.err.println("  接口：" + origin + web.getBasePath());
+        }
         try {
             closed.await();
         } catch (InterruptedException e) {

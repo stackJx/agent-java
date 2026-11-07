@@ -71,7 +71,7 @@ public final class PermissionInterceptor implements ToolInterceptor {
         Map<String, Object> args = invocation.arguments();
         ToolContext context = invocation.context();
         PermissionRequest request = new PermissionRequest(UUID.randomUUID().toString(), context.conversationId(),
-                tool.name(), args, tool.permissionSubject(args), tool.describe(args), reason);
+                tool.name(), args, tool.permissionSubject(args), tool.describe(args), reason, invocation.call().id());
         Approval approval = approveOneAtATime(request, context.cancel());
 
         boolean allowed = approval.decision() == Decision.ALLOW;

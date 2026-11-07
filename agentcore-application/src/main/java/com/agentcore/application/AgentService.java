@@ -11,6 +11,7 @@ import com.agentcore.domain.conversation.model.Conversation;
 import com.agentcore.domain.conversation.model.ConversationId;
 import com.agentcore.domain.conversation.model.ConversationSummary;
 import com.agentcore.domain.conversation.repository.ConversationRepository;
+import com.agentcore.domain.llm.gateway.ModelGateway;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -112,28 +113,53 @@ public final class AgentService {
      */
     public RunHandle chatAsync(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener,
                                Runnable beforeStart) {
+        return chatAsync(conversationId, input, listener, beforeStart, engine.model(), null);
+    }
+
+    /** 本次运行使用指定模型；调用方负责网关生命周期（在 result 完成后关闭）。 */
+    public RunHandle chatAsync(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener,
+                               ModelGateway selectedModel, String modelId) {
+        return chatAsync(conversationId, input, listener, () -> { }, selectedModel, modelId);
+    }
+
+    /**
+     * 动态模型版仍先占住会话，再挂审批通道与保存模型元数据。
+     * 选择只作用于本次运行；其他会话和引擎默认模型不受影响。
+     */
+    public RunHandle chatAsync(String conversationId, List<? extends ContentBlock> input, AgentEventListener listener,
+                               Runnable beforeStart, ModelGateway selectedModel, String modelId) {
+        if (selectedModel == null) {
+            throw new IllegalArgumentException("selected model is required");
+        }
         RunControl control = new RunControl();
         claim(conversationId, control);
-        Conversation conversation;
         try {
-            conversation = load(conversationId);
+            Conversation conversation = load(conversationId);
             beforeStart.run();
-        } catch (RuntimeException e) {
-            release(conversationId, control);
-            throw e;
-        }
-        // 每个运行一个虚拟线程：运行大部分时间在等模型和工具，虚拟线程几乎不占资源
-        CompletableFuture<RunResult> future = new CompletableFuture<>();
-        Thread.ofVirtual().name("agent-run-" + conversationId).start(() -> {
-            try {
-                future.complete(engine.run(conversation, input, listener, control));
-            } catch (Throwable failure) {
-                future.completeExceptionally(failure);
-            } finally {
-                release(conversationId, control);
+            if (modelId != null) {
+                conversation.putMetadata("model_id", modelId);
+                conversation.putMetadata("model", selectedModel.describe());
+                repository.save(conversation);
             }
-        });
-        return new RunHandle(conversationId, control, future);
+            CompletableFuture<RunResult> future = new CompletableFuture<>();
+            // 每个运行一个虚拟线程；外部回调收到完成时，会话锁已释放，可安全发起下一条消息。
+            Thread.ofVirtual().name("agent-run-" + conversationId).start(() -> {
+                RunResult result;
+                try {
+                    result = engine.run(conversation, input, listener, control, selectedModel);
+                } catch (Throwable failure) {
+                    release(conversationId, control);
+                    future.completeExceptionally(failure);
+                    return;
+                }
+                release(conversationId, control);
+                future.complete(result);
+            });
+            return new RunHandle(conversationId, control, future);
+        } catch (RuntimeException | Error failure) {
+            release(conversationId, control);
+            throw failure;
+        }
     }
 
     /**

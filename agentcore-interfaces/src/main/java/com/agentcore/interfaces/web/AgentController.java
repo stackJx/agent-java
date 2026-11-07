@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -73,11 +74,17 @@ public class AgentController {
     private final AgentService service;
     private final AsyncApprover approver;
     private final long sseTimeoutMillis;
+    private final ModelCatalog models;
 
     public AgentController(AgentService service, AsyncApprover approver, Duration sseTimeout) {
+        this(service, approver, sseTimeout, null);
+    }
+
+    public AgentController(AgentService service, AsyncApprover approver, Duration sseTimeout, ModelCatalog models) {
         this.service = service;
         this.approver = approver;
         this.sseTimeoutMillis = sseTimeout == null ? 0 : sseTimeout.toMillis();
+        this.models = models;
     }
 
     @GetMapping("/health")
@@ -119,6 +126,14 @@ public class AgentController {
             messages.add(includeImages ? encoded : ImageData.omitted(encoded));
         });
         detail.set("usage", DomainCodec.usage(conversation.usage()));
+        // 只公开模型回显所需元数据，不顺带暴露宿主写入的其他业务元数据。
+        ObjectNode modelMetadata = detail.putObject("metadata");
+        Map<String, String> storedMetadata = conversation.metadata();
+        for (String key : List.of("model", "model_id")) {
+            if (storedMetadata.containsKey(key)) {
+                modelMetadata.put(key, storedMetadata.get(key));
+            }
+        }
         return json(HttpStatus.OK, detail);
     }
 
@@ -135,24 +150,48 @@ public class AgentController {
      */
     @PostMapping(path = "/conversations/{id}/messages", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter send(@PathVariable String id, @RequestBody String body, HttpServletRequest request) {
-        List<ContentBlock> input = userInput(parse(body));
+        JsonNode message = parse(body);
+        List<ContentBlock> input = userInput(message);
         accessibleConversation(id, request);
+        String modelId = requestedModelId(message);
+        // 这次运行用的模型：专门创建的网关在运行结束时关闭
+        ModelCatalog.Selection selection = models == null ? null : models.select(modelId);
         SseEmitter emitter = new SseEmitter(sseTimeoutMillis);
         Runnable cancelRun = () -> service.cancel(id);
         SseEventStream stream = new SseEventStream(emitter, cancelRun);
         // 运行期间，这个会话的审批请求都推给当前这条 SSE 连接。
         // 占住会话之后才挂上：会话正在运行时 chatAsync 直接返回 409，不会抢走正在运行的那次的审批通道
         AsyncApprover.Channel channel = (PermissionRequest approval) -> stream.send("approval_required", approvalRequired(approval));
-        AgentService.RunHandle handle = service.chatAsync(id, input,
-                (AgentEvent event) -> stream.send(event.type(), EventCodec.encode(event)),
-                () -> {
-                    if (approver != null) {
-                        approver.attach(id, channel);
-                    }
-                });
+        AtomicBoolean attached = new AtomicBoolean();
+        Runnable onClaimed = () -> {
+            if (approver != null) {
+                approver.attach(id, channel);
+                attached.set(true);
+            }
+        };
+        AgentService.RunHandle handle;
+        try {
+            handle = selection == null
+                    ? service.chatAsync(id, input, (AgentEvent event) -> stream.send(event.type(), EventCodec.encode(event)), onClaimed)
+                    : service.chatAsync(id, input, (AgentEvent event) -> stream.send(event.type(), EventCodec.encode(event)),
+                            onClaimed, selection.gateway(), selection.modelId());
+        } catch (RuntimeException | Error failure) {
+            // 没能开始运行（例如会话正在运行）：释放这次准备的模型和审批通道
+            if (selection != null) {
+                selection.close();
+            }
+            if (attached.get()) {
+                approver.detach(id, channel);
+            }
+            stream.complete();
+            throw failure;
+        }
         emitter.onTimeout(cancelRun);
         emitter.onError(error -> cancelRun.run());
         handle.result().whenComplete((result, failure) -> {
+            if (selection != null) {
+                selection.close();
+            }
             if (approver != null) {
                 approver.detach(id, channel);
             }
@@ -164,6 +203,20 @@ public class AgentController {
             stream.complete();
         });
         return emitter;
+    }
+
+    /** 请求里的 model_id（可选）：没有时用默认模型；关闭了模型选择时不允许指定。 */
+    private String requestedModelId(JsonNode message) {
+        if (!message.has("model_id")) {
+            return null;
+        }
+        if (!message.get("model_id").isTextual()) {
+            throw new ModelCatalog.Failure(400, "invalid model_id");
+        }
+        if (models == null) {
+            throw new ModelCatalog.Failure(400, "model selection is disabled");
+        }
+        return message.get("model_id").textValue();
     }
 
     /** {"text": "...", "images": [{"url": "..."} 或 {"media_type": "...", "data": "<base64>"}]}，至少要有一样。 */
@@ -242,6 +295,11 @@ public class AgentController {
 
     // ------------------------------------------------------------------ 错误处理
 
+    @ExceptionHandler(ModelCatalog.Failure.class)
+    public ResponseEntity<String> modelFailure(ModelCatalog.Failure failure) {
+        return json(HttpStatus.valueOf(failure.status()), Json.object().put("error", failure.getMessage()));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<String> badRequest(IllegalArgumentException e) {
         HttpStatus status = String.valueOf(e.getMessage()).startsWith(CONVERSATION_NOT_FOUND) ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
@@ -260,6 +318,9 @@ public class AgentController {
         ObjectNode data = Json.object().put("request_id", request.requestId()).put("tool", request.tool())
                 .put("summary", request.summary()).put("subject", request.subject()).put("reason", request.reason());
         data.set("arguments", Json.tree(request.arguments()));
+        if (request.callId() != null) {
+            data.put("call_id", request.callId()); // 页面据此把审批显示在对应的工具卡片上
+        }
         return data;
     }
 

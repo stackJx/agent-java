@@ -432,11 +432,13 @@ public class AgentCoreProperties {
          * 可以和 {@link #token}（共享 token，能访问所有会话）同时配置。
          */
         private Map<String, String> userTokens = new LinkedHashMap<>();
+        private final Ui ui = new Ui();
+        private final Models models = new Models();
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public String getBasePath() { return basePath; }
-        public void setBasePath(String basePath) { this.basePath = basePath; }
+        public void setBasePath(String basePath) { this.basePath = webPath(basePath, "agentcore.web.base-path"); }
         public Duration getApprovalTimeout() { return approvalTimeout; }
         public void setApprovalTimeout(Duration approvalTimeout) { this.approvalTimeout = approvalTimeout; }
         public Duration getSseTimeout() { return sseTimeout; }
@@ -447,6 +449,57 @@ public class AgentCoreProperties {
         public void setLocalOnly(boolean localOnly) { this.localOnly = localOnly; }
         public Map<String, String> getUserTokens() { return userTokens; }
         public void setUserTokens(Map<String, String> userTokens) { this.userTokens = userTokens; }
+        public Ui getUi() { return ui; }
+        public Models getModels() { return models; }
+    }
+
+    /** 页面上的模型选择和模型配置。 */
+    public static class Models {
+        /** 是否允许在页面上选择、配置模型。 */
+        private boolean enabled = true;
+        /**
+         * 保存模型配置的文件。里面的 API key 是<b>明文</b>（文件权限 600、目录 700，任何接口都不会返回 key）；
+         * 设为空字符串表示只保存在内存里，重启后丢失。
+         */
+        private String file = System.getProperty("user.home") + "/.agentcore/web-models/models.json";
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getFile() { return file; }
+        public void setFile(String file) { this.file = file; }
+    }
+
+    /** 自带的 Web 页面。 */
+    public static class Ui {
+        /** 是否提供页面。 */
+        private boolean enabled = true;
+        /** 页面路径。 */
+        private String path = "/agentcore";
+        /** 访问 / 时跳转到页面（独立部署版默认打开；嵌入别的应用时一般不要占用它的首页）。 */
+        private boolean redirectRoot;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getPath() { return path; }
+        public void setPath(String path) { this.path = webPath(path, "agentcore.web.ui.path"); }
+        public boolean isRedirectRoot() { return redirectRoot; }
+        public void setRedirectRoot(boolean redirectRoot) { this.redirectRoot = redirectRoot; }
+    }
+
+    /** 只允许固定的应用内路径，不能把配置解释成外部 URL、MVC 通配符或编码后的路径穿越。 */
+    private static String webPath(String value, String property) {
+        if (value == null) {
+            throw new IllegalArgumentException(property + " must be a non-root absolute path");
+        }
+        String path = value.replaceAll("/+$", "");
+        if (value.contains("//") || !path.matches("/[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*")) {
+            throw new IllegalArgumentException(property + " must be a non-root absolute path with literal URL-safe segments");
+        }
+        for (String segment : path.substring(1).split("/")) {
+            if (segment.equals(".") || segment.equals("..")) {
+                throw new IllegalArgumentException(property + " must not contain dot segments");
+            }
+        }
+        return path;
     }
 
     // ------------------------------------------------------------------ 便捷转换

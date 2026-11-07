@@ -9,7 +9,7 @@
 - **安全**：权限策略（allow / ask / deny 规则 + default / auto / readonly 模式）、审批端口（命令行 / Web 均已实现）、`AgentHook` 钩子；bash 规则能识别 `;`、`&&`、`&`、`$( )` 等命令拼接；web_fetch 默认询问并拒绝内网地址；文件工具的规则按解析后的真实路径匹配（`..`、符号链接绕不过去），读工作目录之外的文件默认询问；没配 token 的 Web 接口只接受本机请求。
 - **长任务**：上下文自动压缩、会话事件溯源式持久化（默认 JSONL 文件，可切换到 MySQL / PostgreSQL / Oracle / SQL Server / 达梦 / 金仓等关系库，崩溃可恢复）、跨会话长期记忆。
 - **扩展**：Skills、子 Agent（独立上下文、并行、可换模型）、MCP（官方 MCP Java SDK，stdio 与 Streamable HTTP）。
-- **接口**：交互式 REPL、一次性执行、HTTP + SSE 服务（含 Web 审批流程）。
+- **接口**：交互式 REPL、一次性执行、HTTP + SSE 服务；默认自带 Web 对话页面（会话列表、流式回复、工具/审批卡片、亮暗主题），无需前端构建。
 - **Spring Boot 4 Starter**：引入依赖 + 写 `application.yml` 即可；业务工具就是带 `@AgentTool` 的 Spring Bean，钩子、审批、仓储都能用 Bean 替换。
 
 > **第一次看这个项目？** 先看整体架构图 [`docs/agentcore-architecture.drawio`](docs/agentcore-architecture.drawio)（三页：系统总览、运行流程、配置与存储；[预览图](docs/README.md#整体架构图drawio)），再读 [docs/](docs/README.md)：7 篇带图的设计文档（架构、Agent 主循环、会话聚合、工具与权限、模型适配、存储、接入扩展），附阅读路线和术语表。每个包里的 `package-info.java` 说明了这个包负责什么、先读哪个类。
@@ -22,7 +22,7 @@
 
 ```bash
 cd agentcore-java
-mvn -q install                                   # 构建并运行全部测试（约 150 个），生成 agentcore-bootstrap/target/agentcore.jar
+mvn -q install                                   # 构建并运行全部离线测试，生成 agentcore-bootstrap/target/agentcore.jar
 
 export DEEPSEEK_API_KEY=sk-...                   # 或 ANTHROPIC_API_KEY=...
 bin/agentcore                                    # 交互式对话
@@ -34,6 +34,8 @@ bin/agentcore init                               # 生成 agentcore.yaml 配置�
 ```
 
 没有 API Key 时可以先用离线假模型体验：`bin/agentcore -m mock`。
+
+**浏览器体验**：`bin/agentcore serve -m mock` 后打开 <http://127.0.0.1:8080/>，自动进入 `/agentcore/`。页面参考 DSH 的布局与交互，支持流式回复、会话历史、工具审批、取消与插话；可在「模型设置」在线添加服务地址/API Key，并在输入区切换模型，无须重启。资源随 JAR 打包，无需 Node 或 CDN。嵌入 Spring Boot 时访问 `/agentcore/`，不会占用宿主首页。配置、限制和测试方法见 [默认 Web 页面](docs/web-ui.md)。
 
 `bin/agentcore` 本身就是一个 Spring Boot 应用（启动脚本用 JVM 的类数据共享缓存加速：jar 更新后第一次运行约 6 秒，之后每次约 1.7 秒；`AGENTCORE_CDS=0` 可关闭）：组装全部由 `agentcore-spring-boot-starter` 完成，配置文件格式和 Spring Boot 的 `application.yml` 一样，任意配置项都可以用 `--配置项=值` 从命令行覆盖（例如 `--agentcore.web.token=xxx`）。
 
@@ -430,7 +432,8 @@ AGENTCORE_CLASSPATH=/opt/drivers/sqlite-jdbc.jar bin/agentcore \
 ## 测试
 
 ```bash
-mvn test        # 约 150 个测试，不需要任何 API Key（CI：.github/workflows/ci.yml）
+mvn test        # 全部离线测试，不需要任何 API Key（CI：.github/workflows/ci.yml）
+node --test agentcore-interfaces/src/test/js/*.test.mjs  # 前端模块回归，无 npm 依赖
 
 # 对真实模型 API 跑冒烟测试（流式回复、工具调用往返、跨运行的历史回放），默认跳过，会产生少量费用：
 AGENTCORE_SMOKE_MODELS=anthropic:claude-haiku-5-5,deepseek:deepseek-v4-pro \
@@ -441,9 +444,9 @@ AGENTCORE_SMOKE_MODELS=anthropic:claude-haiku-5-5,deepseek:deepseek-v4-pro \
 |---|---|
 | domain | 会话不变式与事件回放、权限规则（命令拼接）、参数校验与类型转换、引擎主循环（并行、错误回填、审批与记住、钩子、截断保护、pause/refusal/max_turns、重试、取消、插话、自动压缩） |
 | infrastructure | 通过本地假 SSE 服务走**真实的 anthropic-java SDK**与 OpenAI 兼容解析路径（thinking 签名回放、缓存参数、beta 回退头、reasoning_content 回传、坏 JSON 回报），OpenAI Responses 流式解析（工具循环、加密推理与 phase 回放、截断/拒答/失败事件、跨厂商历史转换）、回退回放规则、内置工具、JSONL 仓储崩溃恢复、JDBC 仓储（SQLite 实测 + 其余平台建表脚本 × H2 兼容模式：回放、乐观并发冲突、过期缓存刷新、记忆隔离、100KB 大字段）、记忆与 Skills、注解工具、按 API Key 推断默认模型、MCP（stdio 分页 + 服务端请求、HTTP 会话）、子 Agent 并行与工具隔离、异步取消 |
-| interfaces | 命令行 REPL（审批、deny 规则、命令）；Web 控制器由 starter 的测试覆盖 |
+| interfaces | 命令行 REPL；前端 SSE 分块解析、Markdown 安全、审批恢复与流式组件回归（Node）；Web 控制器由 starter 的测试覆盖 |
 | bootstrap | 不用 Spring 的嵌入示例；Spring Boot 命令行端到端：run / sessions / init、配置文件读取顺序与覆盖、`--config`、启动失败的错误提示、经 `spring.datasource` 存数据库 |
-| spring-boot-starter | 数据库存储的开启 / 默认关闭 / 无数据源回退、自动装配（收集 @AgentTool / Tool / AgentHook Bean、属性绑定、Bean 替换、非 Web 场景）、HTTP + SSE 全流程与 Web 审批、Bearer Token 鉴权与 health |
+| spring-boot-starter | 数据库存储的开启 / 默认关闭 / 无数据源回退、自动装配（收集 @AgentTool / Tool / AgentHook Bean、属性绑定、Bean 替换、非 Web 场景）、HTTP + SSE 全流程与 Web 审批、Bearer Token 鉴权与 health；UI 入口/静态资源、开关、路径安全与 context-path |
 | spring-boot-sample | 以 Boot 4.1.2 为父 POM，经由真实 anthropic-java SDK（指向本地假 Claude 服务）跑通业务工具 + 钩子 + 审批 + SSE + 会话持久化 |
 
 > 尚未用真实 API Key 跑过（当前环境没有 Key）。拿到 Key 后建议先跑 `bin/agentcore run "读取 README.md 并总结"` 验证。

@@ -4,6 +4,7 @@ import com.agentcore.domain.agent.event.AgentEvent;
 import com.agentcore.domain.agent.interceptor.ToolInterceptor;
 import com.agentcore.domain.agent.interceptor.ToolInvocation;
 import com.agentcore.domain.agent.model.EngineSettings;
+import com.agentcore.domain.agent.model.RunModel;
 import com.agentcore.domain.conversation.message.ToolCall;
 import com.agentcore.domain.conversation.message.ToolResult;
 import com.agentcore.domain.conversation.model.Conversation;
@@ -48,6 +49,8 @@ final class ToolExecutor {
         Conversation conversation();
 
         CancellationToken cancelToken();
+
+        RunModel runModel();
 
         /** 会话级工具状态（文件读取记录、todo 列表等），同一会话的多次运行共用。 */
         Map<String, Object> toolState();
@@ -192,8 +195,10 @@ final class ToolExecutor {
     }
 
     private ToolContext contextFor(ToolCall call, Scope scope) {
+        Map<Class<?>, Object> scopedServices = new LinkedHashMap<>(services);
+        scopedServices.put(RunModel.class, scope.runModel());
         return new ToolContext(settings.cwd(), scope.conversation().id().value(), call.id(), scope.toolState(),
-                progress -> scope.emit(new AgentEvent.ToolProgress(call.id(), progress)), scope.cancelToken(), services, depth);
+                progress -> scope.emit(new AgentEvent.ToolProgress(call.id(), progress)), scope.cancelToken(), Map.copyOf(scopedServices), depth);
     }
 
     /** 子 Agent 等工具会把自己花掉的 token 放在 metadata.usage 里：取出来计入本次运行和会话，返回剩下的 metadata。 */

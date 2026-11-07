@@ -18,5 +18,10 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test browser modules
+        run: node --test agentcore-interfaces/src/test/js/*.test.mjs
       - name: Build and test
         run: mvn -B -ntp verify

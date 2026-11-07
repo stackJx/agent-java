@@ -49,6 +49,7 @@ public final class BearerTokenInterceptor implements HandlerInterceptor {
         if (given != null) {
             byte[] givenBytes = given.getBytes(StandardCharsets.UTF_8);
             if (sharedHeader != null && MessageDigest.isEqual(sharedHeader, givenBytes)) {
+                request.setAttribute(WebCaller.ADMIN_ATTRIBUTE, Boolean.TRUE);
                 return true;
             }
             for (Map.Entry<String, byte[]> user : headersByUser.entrySet()) {

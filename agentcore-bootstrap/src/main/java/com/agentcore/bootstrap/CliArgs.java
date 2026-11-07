@@ -72,7 +72,7 @@ final class CliArgs {
         if (model != null) {
             springArgs.add("--agentcore.model=" + model);
         }
-        if (yolo) {
+        if (yolo && !readonly) {
             springArgs.add("--agentcore.permissions.mode=auto");
         }
         if (readonly) {
@@ -93,6 +93,12 @@ final class CliArgs {
                 throw new IllegalArgumentException("配置文件不存在：" + file);
             }
             springArgs.add("--spring.config.additional-location=file:" + file);
+        }
+        // Spring 会把重复的同名 CLI 参数拼成逗号值，而不是让后者覆盖前者。
+        // 显式 Spring 属性优先于快捷选项和默认 cwd；保留用户原样传入的参数。
+        for (String explicit : spring) {
+            String option = explicit.split("=", 2)[0];
+            springArgs.removeIf(generated -> generated.startsWith(option + "="));
         }
         springArgs.addAll(spring);
         return springArgs;

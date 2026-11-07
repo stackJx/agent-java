@@ -102,10 +102,18 @@ public final class AnthropicModelGateway implements ModelGateway {
 
     /** options 里为 null 的字段按模型自动决定：新模型（自适应思考）默认开思考、effort=high、1M 上下文。 */
     public AnthropicModelGateway(String model, Options options) {
+        this(model, options, true);
+    }
+
+    /**
+     * @param inheritEnvironment false 时不从环境变量读 key、地址、请求头（页面上配置的模型用这个，
+     *                           只用自己配置里的值，不会带上启动环境里的凭据）
+     */
+    public AnthropicModelGateway(String model, Options options, boolean inheritEnvironment) {
         this.model = model == null || model.isBlank() ? DEFAULT_MODEL : model;
         Options given = options == null ? Options.defaults() : options;
         boolean adaptive = ADAPTIVE.matcher(this.model).find();
-        boolean firstParty = given.baseUrl() == null && System.getenv("ANTHROPIC_BASE_URL") == null;
+        boolean firstParty = given.baseUrl() == null && (!inheritEnvironment || System.getenv("ANTHROPIC_BASE_URL") == null);
         this.maxTokens = given.maxTokens() != null ? given.maxTokens() : DEFAULT_MAX_TOKENS;
         this.contextWindow = given.contextWindow() != null ? given.contextWindow()
                 : adaptive ? ADAPTIVE_CONTEXT_WINDOW : LEGACY_CONTEXT_WINDOW;
@@ -116,12 +124,15 @@ public final class AnthropicModelGateway implements ModelGateway {
         this.eagerInputStreaming = given.eagerInputStreaming() != null ? given.eagerInputStreaming() : firstParty;
         this.promptCache = given.promptCache() == null || given.promptCache();
         this.extraBody = given.extraBody() == null ? Map.of() : given.extraBody();
-        this.client = createClient(given);
+        this.client = createClient(given, inheritEnvironment);
     }
 
-    /** 没配的项从环境变量读（ANTHROPIC_API_KEY、ANTHROPIC_BASE_URL 等）。 */
-    private static AnthropicClient createClient(Options given) {
-        AnthropicOkHttpClient.Builder builder = AnthropicOkHttpClient.builder().fromEnv();
+    /** 启动配置里的模型：没配的项从环境变量读（ANTHROPIC_API_KEY 等）；页面配置的模型不读环境变量。 */
+    private static AnthropicClient createClient(Options given, boolean inheritEnvironment) {
+        AnthropicOkHttpClient.Builder builder = AnthropicOkHttpClient.builder();
+        if (inheritEnvironment) {
+            builder.fromEnv();
+        }
         if (given.apiKey() != null && !given.apiKey().isBlank()) {
             builder.apiKey(given.apiKey());
         }

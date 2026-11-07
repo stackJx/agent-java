@@ -76,6 +76,12 @@ public final class OpenAiResponsesModelGateway implements ModelGateway {
         return options.contextWindow();
     }
 
+    /** 动态配置按运行创建网关；结束时立即释放连接池，不依赖 GC 回收客户端。 */
+    @Override
+    public void close() {
+        http.shutdownNow();
+    }
+
     ObjectNode buildBody(ModelRequest request) {
         ObjectNode body = Json.object();
         body.put("model", model);

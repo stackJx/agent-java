@@ -91,6 +91,36 @@ class ServiceAndSubAgentTest {
     }
 
     @Test
+    void selectedModelIsInheritedBySubAgentsAndSavedWithConversation() throws Exception {
+        var original = new ScriptedModelGateway().then(reply("startup model must not run"));
+        var selected = new ScriptedModelGateway()
+                .then(reply("", call("task", "description", "research", "prompt", "child work")))
+                .then(request -> {
+                    assertTrue(request.system().contains("Sub-agent mode"));
+                    return reply("selected child reply");
+                })
+                .then(reply("selected parent reply"));
+        var repository = new JsonlConversationRepository(dir.resolve("selected-sessions"));
+        var task = new TaskTool(Map.of(), null);
+        var engine = AgentEngine.builder().definition(new AgentDefinition("main", "sys", EngineSettings.defaults(dir)))
+                .model(original).tools(new ToolRegistry(List.of(task))).repository(repository).build();
+        task.attach(engine);
+        var service = new AgentService(engine, repository);
+        String id = service.startConversation(Map.of()).id().value();
+        var result = service.chatAsync(id, List.of(new TextBlock("go")), null, selected, "selected-profile")
+                .result().get(5, TimeUnit.SECONDS);
+        assertEquals("selected parent reply", result.text());
+        assertFalse(service.isRunning(id), "completion callbacks may immediately start another run");
+        var restored = new JsonlConversationRepository(dir.resolve("selected-sessions"))
+                .findById(com.agentcore.domain.conversation.model.ConversationId.of(id)).orElseThrow();
+        assertEquals("selected-profile", restored.metadata().get("model_id"));
+        assertEquals(selected.describe(), restored.metadata().get("model"));
+        assertEquals("selected child reply", restored.messages().get(2).toolResults().getFirst().text());
+        assertSame(original, engine.model());
+        assertEquals(3, result.usage().requests());
+    }
+
+    @Test
     void serviceRejectsConcurrentRunsAndSupportsAsyncCancel() throws Exception {
         Tool slow = FunctionTool.builder("slow").readOnly(true).timeout(null).handler((a, c) -> {
             Thread.sleep(10_000);
