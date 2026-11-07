@@ -171,7 +171,10 @@ button:disabled {
 
 .app {
   display: grid;
+  /* 行也要固定成视口高度：只给容器 height 时，隐式行高是 auto，
+     会话一多整行就被撑高，侧栏底部那排按钮（模型设置/令牌/主题）会跑到视口外 */
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100dvh;
 }
 
@@ -245,7 +248,9 @@ button:disabled {
 
 
 .conversation-list {
+  /* flex 子项的 min-height 默认是 auto，会被内容撑高，把侧栏底部的模型/令牌/主题按钮顶出视口 */
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 8px 8px;
 }
