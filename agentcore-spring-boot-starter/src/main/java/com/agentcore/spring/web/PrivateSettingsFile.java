@@ -19,7 +19,8 @@ import java.util.Set;
  *
  * <p>安全约束：
  * <ul>
- *   <li>文件路径上不能有符号链接，文件不能有多个硬链接 —— 防止被链接到别处，读写了不该碰的文件；</li>
+ *   <li>文件本身和它所在的目录不能是符号链接，文件不能有多个硬链接 —— 防止被链接到别处，读写了不该碰的文件
+ *       （更上层的目录不检查，原因见 {@code rejectSymbolicLinks}）；</li>
  *   <li>文件权限必须是 600、所在目录必须是 700（不允许组和其他用户访问）。新建时直接这样创建；
  *       已经存在、但权限更宽的目录或文件不会被悄悄改掉，而是报错，由用户自己确认；</li>
  *   <li>写入先写临时文件、刷到磁盘，再原子地替换，写到一半失败也不会留下损坏的文件。</li>
@@ -97,11 +98,18 @@ final class PrivateSettingsFile {
 
     // ------------------------------------------------------------------ 安全检查
 
-    /** 路径本身和每一级上级目录都不能是符号链接。 */
-    private static void rejectSymbolicLinks(Path path) throws Problem {
-        for (Path current = path; current != null; current = current.getParent()) {
-            if (Files.isSymbolicLink(current)) {
-                throw new Problem("path contains a symbolic link: " + current);
+    /**
+     * 文件本身和它所在的专用目录（必须是 700 的那一级）都不能是符号链接。
+     *
+     * <p>更上层的目录不检查：macOS 的 /var、/tmp（临时目录就在下面）和有些 Linux 发行版的 /home 本身就是系统建的符号链接，
+     * 一路查到根目录会让这些机器上的正常路径都用不了。放过它们不降低安全性：要替换上层的符号链接，
+     * 需要它所在目录的写权限，有这个权限的人没有符号链接也能直接替换真实目录；真正挡住别人的是
+     * 专用目录 700、文件 600、不能有多个硬链接这几项检查。{@link Files#isSymbolicLink} 只看最后一级，上层的链接照常跟随。
+     */
+    private static void rejectSymbolicLinks(Path file) throws Problem {
+        for (Path path : new Path[] {file, file.getParent()}) {
+            if (path != null && Files.isSymbolicLink(path)) {
+                throw new Problem(path + " is a symbolic link");
             }
         }
     }

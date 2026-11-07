@@ -148,6 +148,10 @@ class FileModelCatalogTest {
     @Test void refusesMalformedAndSymlinkedPersistenceWithoutLeakingSecrets() throws Exception {
         Path file = directory.resolve("models.json");
         Files.writeString(file, "{secret-value broken");
+        // 新文件的权限取决于 umask（常见的 022 会得到 644），先改成 600，才能测到 JSON 解析这一步
+        if (Files.getFileStore(directory).supportsFileAttributeView("posix")) {
+            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------"));
+        }
         // 错误信息要说清楚是哪个文件、什么问题，但不能带出文件内容（里面可能有 key）
         assertThatThrownBy(() -> new FileModelCatalog(startup, file))
                 .hasMessageStartingWith("could not load model settings from " + file)
@@ -158,6 +162,31 @@ class FileModelCatalogTest {
         assertThatThrownBy(() -> new FileModelCatalog(startup, link))
                 .hasMessageStartingWith("could not load model settings from " + link)
                 .hasMessageContaining("symbolic link");
+    }
+
+    @Test void followsSymlinkedAncestorsAboveThePrivateDirectory() throws Exception {
+        // macOS 的 /var、/tmp 和有些发行版的 /home 本身就是符号链接：专用目录之上的链接照常跟随
+        Path real = Files.createDirectory(directory.resolve("real"));
+        Path file = Files.createSymbolicLink(directory.resolve("alias"), real).resolve("private/models.json");
+        FileModelCatalog catalog = new FileModelCatalog(startup, file);
+        catalog.put("local", profile());
+        assertThat(Files.readString(real.resolve("private/models.json"))).contains("secret-value");
+        assertThat(new FileModelCatalog(startup, file).settings()).isEqualTo(catalog.settings());
+    }
+
+    @Test void refusesSymlinkedPrivateDirectoryForReadsAndWrites() throws Exception {
+        Path real = directory.resolve("real");
+        new FileModelCatalog(startup, real.resolve("models.json")).put("local", profile());
+        String original = Files.readString(real.resolve("models.json"));
+        Path alias = directory.resolve("alias");
+        FileModelCatalog openedBeforeLink = new FileModelCatalog(startup, alias.resolve("models.json"));
+        Files.createSymbolicLink(alias, real);
+        assertThatThrownBy(() -> new FileModelCatalog(startup, alias.resolve("models.json")))
+                .hasMessageStartingWith("could not load model settings from " + alias.resolve("models.json"))
+                .hasMessageContaining(alias + " is a symbolic link");
+        assertThatThrownBy(() -> openedBeforeLink.put("other", profile())).hasMessage("could not persist model settings");
+        assertThat(Files.readString(real.resolve("models.json"))).isEqualTo(original);
+        try (var files = Files.list(real)) { assertThat(files.toList()).containsExactly(real.resolve("models.json")); }
     }
 
     @Test void gatewayLeasesBorrowStartupAndKeepSnapshotsAcrossReplacementAndDeletion() throws Exception {
